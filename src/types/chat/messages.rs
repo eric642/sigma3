@@ -7,6 +7,7 @@ use crate::types::chat::content::{
     ChatCompletionRequestMessageContentPartImage, ChatCompletionRequestMessageContentPartRefusal,
     ChatCompletionRequestMessageContentPartText,
 };
+use crate::types::chat::tools::ChatCompletionMessageToolCalls;
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, Default, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -168,7 +169,8 @@ pub struct ChatCompletionRequestAssistantMessage {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audio: Option<ChatCompletionRequestAssistantMessageAudio>,
-    // tool_calls field is added in Phase 5 once ChatCompletionMessageToolCalls exists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ChatCompletionMessageToolCalls>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone, Builder, PartialEq)]

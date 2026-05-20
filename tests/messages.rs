@@ -76,6 +76,7 @@ fn assistant_minimal_skips_none() {
         refusal: None,
         name: None,
         audio: None,
+        tool_calls: None,
     };
     let s = serde_json::to_string(&a).unwrap();
     assert_eq!(s, r#"{"content":"hi"}"#);
