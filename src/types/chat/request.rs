@@ -7,8 +7,8 @@ use crate::error::SigmaError;
 use crate::types::Metadata;
 use crate::types::chat::messages::ChatCompletionRequestMessage;
 use crate::types::chat::options::{
-    ChatCompletionAudio, ChatCompletionStreamOptions, PredictionContent, ResponseModalities,
-    ServiceTier, Verbosity, WebSearchOptions,
+    ChatCompletionAudio, ChatCompletionStreamOptions, PredictionContent, PromptCacheRetention,
+    ResponseModalities, ServiceTier, Verbosity, WebSearchOptions,
 };
 use crate::types::chat::tools::{ChatCompletionToolChoiceOption, ChatCompletionTools};
 use crate::types::shared::{ReasoningEffort, ResponseFormat};
@@ -91,6 +91,8 @@ pub struct CreateChatCompletionRequest {
     pub safety_identifier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_cache_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_retention: Option<PromptCacheRetention>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Metadata>,
 }

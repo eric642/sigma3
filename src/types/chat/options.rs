@@ -12,6 +12,18 @@ pub enum ServiceTier {
     Priority,
 }
 
+/// The retention policy for the prompt cache.
+///
+/// For most models the default is `in_memory`. For `gpt-5.5`, `gpt-5.5-pro`,
+/// and all future models, the default is `24h` and `in_memory` is not supported.
+#[derive(Clone, Serialize, Debug, Deserialize, PartialEq)]
+pub enum PromptCacheRetention {
+    #[serde(rename = "in_memory")]
+    InMemory,
+    #[serde(rename = "24h")]
+    TwentyFourHours,
+}
+
 /// Constrains the verbosity of the model's response.
 #[derive(Clone, Serialize, Debug, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
