@@ -1,3 +1,4 @@
+mod api;
 mod content;
 mod messages;
 mod options;
@@ -6,6 +7,7 @@ mod response;
 mod streaming;
 mod tools;
 
+pub use api::*;
 pub use content::*;
 pub use messages::*;
 pub use options::*;
