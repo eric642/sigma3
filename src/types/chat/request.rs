@@ -4,6 +4,7 @@ use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::error::SigmaError;
+use crate::model::ModelRef;
 use crate::types::Metadata;
 use crate::types::chat::messages::ChatCompletionRequestMessage;
 use crate::types::chat::options::{
@@ -36,8 +37,14 @@ pub enum StopConfiguration {
 #[builder(derive(Debug))]
 #[builder(build_fn(error = "SigmaError"))]
 pub struct CreateChatCompletionRequest {
+    /// Messages that form the conversation sent to the model.
     pub messages: Vec<ChatCompletionRequestMessage>,
-    pub model: String,
+    /// Model selector used by sigma routing.
+    ///
+    /// Plain strings deserialize as [`ModelRef::model`], preserving
+    /// OpenAI-compatible JSON while allowing callers to use deployment or
+    /// provider-model routing in Rust.
+    pub model: ModelRef,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub modalities: Option<Vec<ResponseModalities>>,
