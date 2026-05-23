@@ -9,8 +9,8 @@ use sigma::types::chat::{
 };
 use sigma::{
     ChatParameterMap, Client, ClientConfig, ModelDeploymentConfig, ModelName, ModelRef,
-    ParamPolicy, ProviderCatalog, ProviderId, ProviderInstanceConfig, ProviderKind, SecretString,
-    SigmaError,
+    ParamPolicy, ProviderCatalog, ProviderCommonConfig, ProviderConfigMap, ProviderId,
+    ProviderInstanceConfig, ProviderKind, SecretString, SigmaError,
 };
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request as WiremockRequest, ResponseTemplate};
@@ -21,16 +21,18 @@ fn openai_config(
     api_base: impl Into<Option<String>>,
     api_key: impl Into<Option<SecretString>>,
     headers: HashMap<String, String>,
-    options: Value,
+    provider_config: Value,
 ) -> ClientConfig {
     ClientConfig {
         providers: vec![ProviderInstanceConfig {
             id: ProviderId::from(provider_id),
             kind: ProviderKind::from(kind),
-            api_base: api_base.into(),
-            api_key: api_key.into(),
-            headers,
-            options,
+            common: ProviderCommonConfig {
+                api_base: api_base.into(),
+                api_key: api_key.into(),
+                headers,
+            },
+            config: provider_config_map(provider_config),
         }],
         deployments: vec![ModelDeploymentConfig {
             id: "openai-chat".into(),
@@ -42,6 +44,14 @@ fn openai_config(
         }],
         default_model: None,
         param_policy: ParamPolicy::RejectUnsupported,
+    }
+}
+
+fn provider_config_map(value: Value) -> ProviderConfigMap {
+    match value {
+        Value::Object(map) => map,
+        Value::Null => ProviderConfigMap::new(),
+        other => panic!("provider config must be an object or null, got {other:?}"),
     }
 }
 
@@ -111,6 +121,54 @@ fn catalog_from_inventory_collects_openai_provider_registrations() {
 
     assert!(catalog.contains_kind(&ProviderKind::from("openai")));
     assert!(catalog.contains_kind(&ProviderKind::from("openai-compatible")));
+}
+
+#[test]
+fn catalog_from_inventory_exposes_openai_provider_config_schemas() {
+    let catalog = ProviderCatalog::from_inventory().unwrap();
+    let schemas = catalog.provider_instance_config_schemas();
+    let openai = schemas
+        .iter()
+        .find(|schema| schema.kind == "openai")
+        .unwrap();
+    let compatible = schemas
+        .iter()
+        .find(|schema| schema.kind == "openai-compatible")
+        .unwrap();
+
+    assert_eq!(
+        openai.schema["properties"]["config"]["additionalProperties"],
+        false
+    );
+    assert_eq!(
+        compatible.schema["properties"]["config"]["properties"]["map_max_completion_tokens_to_max_tokens"]
+            ["default"],
+        true
+    );
+}
+
+#[test]
+fn openai_provider_rejects_unknown_provider_config_fields() {
+    let err = match Client::build(openai_config(
+        "openai",
+        "openai-primary",
+        Some("http://localhost:8080/v1".to_string()),
+        Some(SecretString::from("sk-test")),
+        HashMap::new(),
+        json!({ "unexpected": true }),
+    )) {
+        Ok(_) => panic!("expected provider config error"),
+        Err(err) => err,
+    };
+
+    assert!(matches!(
+        err,
+        SigmaError::ProviderConfig {
+            provider: Some(provider),
+            message
+        } if provider == "openai-primary"
+            && message.contains("unknown field")
+    ));
 }
 
 #[tokio::test]
@@ -354,6 +412,36 @@ async fn compatible_create_maps_max_completion_tokens_to_max_tokens_by_default()
     let body = last_body(&server).await;
     assert_eq!(body["max_tokens"], 42);
     assert!(body.get("max_completion_tokens").is_none());
+}
+
+#[tokio::test]
+async fn compatible_create_preserves_max_completion_tokens_when_mapping_disabled() {
+    let server = MockServer::start().await;
+    mount_json_response(
+        &server,
+        "/v1/chat/completions",
+        response_body("gpt-4o-mini", "ok"),
+    )
+    .await;
+    let client = Client::build(openai_config(
+        "openai-compatible",
+        "compatible-tokens",
+        Some(format!("{}/v1", server.uri())),
+        Some(SecretString::from("token")),
+        HashMap::new(),
+        json!({
+            "map_max_completion_tokens_to_max_tokens": false
+        }),
+    ))
+    .unwrap();
+    let mut request = request(ModelRef::model("gpt-public"));
+    request.params.max_completion_tokens = Some(42);
+
+    client.chat().create(&request).await.unwrap();
+
+    let body = last_body(&server).await;
+    assert_eq!(body["max_completion_tokens"], 42);
+    assert!(body.get("max_tokens").is_none());
 }
 
 #[tokio::test]

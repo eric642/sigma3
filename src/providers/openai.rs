@@ -8,9 +8,9 @@ use bytes::Bytes;
 use futures_core::Stream;
 use http::header::{AUTHORIZATION, CONTENT_TYPE};
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
-use serde::Serialize;
 use serde::ser::{SerializeMap, Serializer};
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
 use crate::config::{ChatParameterMap, SecretString};
 use crate::provider_http::{
@@ -76,20 +76,19 @@ struct OpenAiProvider {
 
 impl OpenAiProvider {
     fn from_openai_config(init: ProviderInit) -> SigmaResult<Arc<dyn ProviderDriver>> {
+        let _config: OpenAiConfig = init.deserialize_config()?;
+
         Self::from_config(init, OpenAiFlavor::OpenAi)
     }
 
     fn from_compatible_config(init: ProviderInit) -> SigmaResult<Arc<dyn ProviderDriver>> {
-        let map_max_completion_tokens_to_max_tokens = init
-            .options
-            .get("map_max_completion_tokens_to_max_tokens")
-            .and_then(Value::as_bool)
-            .unwrap_or(true);
+        let config: OpenAiCompatibleConfig = init.deserialize_config()?;
 
         Self::from_config(
             init,
             OpenAiFlavor::Compatible {
-                map_max_completion_tokens_to_max_tokens,
+                map_max_completion_tokens_to_max_tokens: config
+                    .map_max_completion_tokens_to_max_tokens,
             },
         )
     }
@@ -99,8 +98,8 @@ impl OpenAiProvider {
         flavor: OpenAiFlavor,
     ) -> SigmaResult<Arc<dyn ProviderDriver>> {
         let api_base = resolve_api_base(&init, flavor)?;
-        let api_key = resolve_api_key(init.api_key.clone(), flavor);
-        let headers = header_map_from_config(&init.id, init.headers)?;
+        let api_key = resolve_api_key(init.common.api_key.clone(), flavor);
+        let headers = header_map_from_config(&init.id, init.common.headers)?;
 
         if flavor.requires_authentication()
             && api_key.is_none()
@@ -139,6 +138,24 @@ impl ProviderDriver for OpenAiProvider {
 
     fn chat(&self) -> Option<&dyn ChatCompletionAdapter> {
         Some(&self.chat)
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct OpenAiConfig {}
+
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct OpenAiCompatibleConfig {
+    map_max_completion_tokens_to_max_tokens: bool,
+}
+
+impl Default for OpenAiCompatibleConfig {
+    fn default() -> Self {
+        Self {
+            map_max_completion_tokens_to_max_tokens: true,
+        }
     }
 }
 
@@ -509,12 +526,14 @@ impl Stream for OpenAiSseStream {
 fn resolve_api_base(init: &ProviderInit, flavor: OpenAiFlavor) -> SigmaResult<String> {
     match flavor {
         OpenAiFlavor::OpenAi => Ok(init
+            .common
             .api_base
             .clone()
             .or_else(|| non_empty_env("OPENAI_BASE_URL"))
             .or_else(|| non_empty_env("OPENAI_API_BASE"))
             .unwrap_or_else(|| OPENAI_DEFAULT_BASE_URL.to_string())),
         OpenAiFlavor::Compatible { .. } => init
+            .common
             .api_base
             .clone()
             .or_else(|| non_empty_env("OPENAI_COMPATIBLE_API_BASE"))
@@ -654,12 +673,38 @@ fn event_data(event: &str) -> Option<String> {
     }
 }
 
+fn openai_config_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "default": {},
+        "description": "The built-in OpenAI provider does not require provider-specific config."
+    })
+}
+
+fn openai_compatible_config_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "default": {},
+        "properties": {
+            "map_max_completion_tokens_to_max_tokens": {
+                "type": "boolean",
+                "default": true,
+                "description": "When true, maps OpenAI max_completion_tokens to legacy max_tokens for compatible endpoints."
+            }
+        }
+    })
+}
+
 submit_provider! {
     kind: OPENAI_KIND,
     constructor: OpenAiProvider::from_openai_config,
+    config_schema: openai_config_schema,
 }
 
 submit_provider! {
     kind: OPENAI_COMPATIBLE_KIND,
     constructor: OpenAiProvider::from_compatible_config,
+    config_schema: openai_compatible_config_schema,
 }

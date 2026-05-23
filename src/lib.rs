@@ -7,10 +7,10 @@
 //! `client.chat().create_stream(&request).await`.
 //!
 //! ```no_run
-//! # use std::collections::HashMap;
 //! use sigma::{
 //!     Client, ClientConfig, ModelDeploymentConfig, ModelName, ParamPolicy,
-//!     ProviderId, ProviderInstanceConfig, ProviderKind,
+//!     ProviderCommonConfig, ProviderConfigMap, ProviderId, ProviderInstanceConfig,
+//!     ProviderKind,
 //! };
 //!
 //! # fn build_client() -> sigma::SigmaResult<Client> {
@@ -18,10 +18,8 @@
 //!     providers: vec![ProviderInstanceConfig {
 //!         id: ProviderId::from("primary"),
 //!         kind: ProviderKind::from("openai"),
-//!         api_base: None,
-//!         api_key: None,
-//!         headers: HashMap::new(),
-//!         options: serde_json::Value::Null,
+//!         common: ProviderCommonConfig::default(),
+//!         config: ProviderConfigMap::new(),
 //!     }],
 //!     deployments: vec![ModelDeploymentConfig {
 //!         id: "gpt-4o-prod".into(),

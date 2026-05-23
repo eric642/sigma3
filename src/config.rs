@@ -27,6 +27,15 @@ pub type ChatParameterMap = serde_json::Map<String, Value>;
 /// provider's override object.
 pub type ProviderMetadataMap = HashMap<ProviderId, ChatParameterMap>;
 
+/// Provider-specific configuration as a JSON-compatible object.
+///
+/// Core sigma does not interpret these fields. Provider constructors should
+/// call [`crate::ProviderInit::deserialize_config`] to read this map into a
+/// provider-owned typed configuration struct. Because the map uses Serde data
+/// model values, callers can populate it from JSON, TOML, YAML, or any other
+/// Serde format before building a [`ClientConfig`].
+pub type ProviderConfigMap = serde_json::Map<String, Value>;
+
 /// Redacted secret string for API keys and other provider credentials.
 ///
 /// `Debug` output never prints the secret value. Provider constructors can call
@@ -74,6 +83,38 @@ pub enum ParamPolicy {
     DropUnsupported,
 }
 
+/// Common configuration fields available to every provider instance.
+///
+/// These fields cover the endpoint, credentials, and static HTTP headers used
+/// by most providers. They are serialized at the top level of
+/// [`ProviderInstanceConfig`] with Serde `flatten`, so JSON, TOML, and YAML
+/// configuration files use `api_base`, `api_key`, and `headers` beside `id`
+/// and `kind`. Provider-specific settings belong in
+/// [`ProviderInstanceConfig::config`].
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ProviderCommonConfig {
+    /// Optional provider base URL override.
+    ///
+    /// Providers decide whether this value is required and how environment
+    /// variable fallbacks are applied. Built-in OpenAI providers use it as the
+    /// API root and append `/chat/completions` when needed.
+    pub api_base: Option<String>,
+    /// Optional provider credential.
+    ///
+    /// Providers may use this directly, combine it with environment fallback
+    /// variables, or ignore it when their protocol uses another authentication
+    /// mechanism. Keep this value out of logs by using
+    /// [`SecretString::expose_secret`] only when constructing credentials.
+    pub api_key: Option<SecretString>,
+    /// Additional static headers made available to the provider constructor.
+    ///
+    /// Providers that use sigma's HTTP adapter usually send these headers on
+    /// every request. Header validation is provider-owned because supported
+    /// syntax can vary by protocol.
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+}
+
 /// Configuration for one initialized provider instance.
 ///
 /// `kind` chooses the registered provider driver. `id` names this configured
@@ -87,36 +128,23 @@ pub struct ProviderInstanceConfig {
     /// Registered provider kind, for example `"openai"`,
     /// `"openai-compatible"`, or a kind submitted by another provider crate.
     pub kind: ProviderKind,
-    /// Optional provider base URL override.
+    /// Common provider configuration fields serialized at this struct's top
+    /// level.
     ///
-    /// For `openai`, this defaults to `OPENAI_BASE_URL`, `OPENAI_API_BASE`, or
-    /// `https://api.openai.com/v1`. For `openai-compatible`, this must be set
-    /// here or through `OPENAI_COMPATIBLE_API_BASE` / `OPENAI_LIKE_API_BASE`.
-    /// Base URLs should include any version path, such as `/v1`; sigma appends
-    /// `/chat/completions` unless the URL already ends with that endpoint.
-    pub api_base: Option<String>,
-    /// Optional provider credential.
-    ///
-    /// For `openai`, sigma falls back to `OPENAI_API_KEY` and requires either a
-    /// key or an explicit `Authorization` header. For `openai-compatible`,
-    /// sigma falls back to `OPENAI_COMPATIBLE_API_KEY` /
-    /// `OPENAI_LIKE_API_KEY`, but local compatible endpoints may omit
-    /// credentials entirely.
-    pub api_key: Option<SecretString>,
-    /// Additional static headers made available to the provider constructor.
-    ///
-    /// Built-in OpenAI providers send these headers on every request. An
-    /// explicit `Authorization` or `Content-Type` header is preserved and is
-    /// not overwritten by generated defaults.
-    #[serde(default)]
-    pub headers: HashMap<String, String>,
+    /// This keeps hand-written config concise while passing common runtime
+    /// settings to providers through [`crate::ProviderInit::common`].
+    #[serde(flatten)]
+    pub common: ProviderCommonConfig,
     /// Provider-specific configuration that sigma core does not interpret.
     ///
-    /// The built-in `openai-compatible` provider accepts
+    /// Provider crates should document this object through the
+    /// `config_schema` function registered with [`crate::submit_provider!`] and
+    /// deserialize it with [`crate::ProviderInit::deserialize_config`]. The
+    /// built-in `openai-compatible` provider accepts
     /// `map_max_completion_tokens_to_max_tokens: bool`, defaulting to `true`,
     /// for endpoints that expect legacy `max_tokens`.
     #[serde(default)]
-    pub options: Value,
+    pub config: ProviderConfigMap,
 }
 
 /// Route from a public model name to a provider-native model.
