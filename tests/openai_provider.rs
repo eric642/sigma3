@@ -8,8 +8,9 @@ use sigma::types::chat::{
     CreateChatCompletionRequestArgs,
 };
 use sigma::{
-    Client, ClientConfig, ModelDeploymentConfig, ModelName, ModelRef, ParamPolicy, ProviderCatalog,
-    ProviderId, ProviderInstanceConfig, ProviderKind, SecretString, SigmaError,
+    ChatParameterMap, Client, ClientConfig, ModelDeploymentConfig, ModelName, ModelRef,
+    ParamPolicy, ProviderCatalog, ProviderId, ProviderInstanceConfig, ProviderKind, SecretString,
+    SigmaError,
 };
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request as WiremockRequest, ResponseTemplate};
@@ -286,6 +287,40 @@ async fn compatible_create_does_not_append_chat_completions_twice() {
         .unwrap();
 
     assert_eq!(last_body(&server).await["model"], "gpt-4o-mini");
+}
+
+#[tokio::test]
+async fn compatible_create_sends_provider_metadata_from_provider_override() {
+    let server = MockServer::start().await;
+    mount_json_response(
+        &server,
+        "/v1/chat/completions",
+        response_body("gpt-4o-mini", "ok"),
+    )
+    .await;
+    let provider_id = "zhipu";
+    let client = Client::build(openai_config(
+        "openai-compatible",
+        provider_id,
+        Some(format!("{}/v1", server.uri())),
+        Some(SecretString::from("token")),
+        HashMap::new(),
+        Value::Null,
+    ))
+    .unwrap();
+    let mut request = request(ModelRef::model("gpt-public"));
+    let mut overrides = ChatParameterMap::new();
+    overrides.insert("metadata".to_string(), json!({"trace_id": "trace-123"}));
+    request
+        .metadata
+        .insert(ProviderId::from(provider_id), overrides);
+
+    client.chat().create(request).await.unwrap();
+
+    assert_eq!(
+        last_body(&server).await["metadata"],
+        json!({"trace_id": "trace-123"})
+    );
 }
 
 #[tokio::test]

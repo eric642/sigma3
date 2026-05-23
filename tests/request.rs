@@ -1,8 +1,12 @@
+use std::collections::HashMap;
+
+use serde_json::json;
 use sigma::types::chat::{
     ChatCompletionRequestMessage, ChatCompletionRequestUserMessage,
     ChatCompletionRequestUserMessageContent, CreateChatCompletionRequest,
     CreateChatCompletionRequestArgs, Prompt, StopConfiguration,
 };
+use sigma::{ChatParameterMap, ProviderId};
 
 #[test]
 fn prompt_untagged_string() {
@@ -49,4 +53,42 @@ fn create_request_round_trip() {
     let req: CreateChatCompletionRequest = serde_json::from_str(json).unwrap();
     assert_eq!(req.model, "gpt-4o");
     assert_eq!(req.temperature, Some(0.7));
+}
+
+#[test]
+fn create_request_metadata_round_trips_as_provider_body_overrides() {
+    let mut zhipu_overrides = ChatParameterMap::new();
+    zhipu_overrides.insert("model".to_string(), json!("glm-4-plus"));
+    zhipu_overrides.insert("metadata".to_string(), json!({"trace_id": "trace-123"}));
+
+    let req = CreateChatCompletionRequestArgs::default()
+        .messages(vec![ChatCompletionRequestMessage::User(
+            ChatCompletionRequestUserMessage::from("hi"),
+        )])
+        .model("gpt-4o")
+        .metadata(HashMap::from([(
+            ProviderId::from("zhipu"),
+            zhipu_overrides.clone(),
+        )]))
+        .build()
+        .unwrap();
+
+    let value = serde_json::to_value(&req).unwrap();
+    assert_eq!(
+        value["metadata"],
+        json!({
+            "zhipu": {
+                "metadata": {
+                    "trace_id": "trace-123",
+                },
+                "model": "glm-4-plus",
+            },
+        })
+    );
+
+    let back: CreateChatCompletionRequest = serde_json::from_value(value).unwrap();
+    assert_eq!(
+        back.metadata.get(&ProviderId::from("zhipu")),
+        Some(&zhipu_overrides)
+    );
 }

@@ -76,6 +76,11 @@ impl FakeProvider {
             .get("stream_transform")
             .and_then(Value::as_str)
             .unwrap_or("json");
+        let request_body = init
+            .options
+            .get("request_body")
+            .and_then(Value::as_str)
+            .unwrap_or("json");
 
         Ok(Arc::new(Self {
             id: init.id.clone(),
@@ -85,6 +90,7 @@ impl FakeProvider {
                 base_url,
                 stream_behavior,
                 stream_transform: FakeStreamTransform::from_config(stream_transform),
+                request_body: FakeRequestBody::from_config(request_body),
             },
         }))
     }
@@ -114,6 +120,7 @@ struct FakeChatAdapter {
     base_url: String,
     stream_behavior: StreamBehavior,
     stream_transform: FakeStreamTransform,
+    request_body: FakeRequestBody,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,6 +130,21 @@ enum FakeStreamTransform {
 }
 
 impl FakeStreamTransform {
+    fn from_config(value: &str) -> Self {
+        match value {
+            "raw_text" => Self::RawText,
+            _ => Self::Json,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FakeRequestBody {
+    Json,
+    RawText,
+}
+
+impl FakeRequestBody {
     fn from_config(value: &str) -> Self {
         match value {
             "raw_text" => Self::RawText,
@@ -193,12 +215,29 @@ impl ChatCompletionAdapter for FakeChatAdapter {
         endpoint: ProviderEndpoint,
     ) -> SigmaResult<ProviderRequest> {
         push_event(&self.id, "transform_request");
+        if self.request_body == FakeRequestBody::RawText {
+            let suffix = request
+                .body_overrides
+                .get("provider_native")
+                .and_then(Value::as_bool)
+                .map(|enabled| format!("provider_native={enabled}"))
+                .unwrap_or_else(|| "no-overrides".to_string());
+
+            return Ok(ProviderRequest {
+                method: endpoint.method,
+                url: endpoint.url,
+                headers: HeaderMap::new(),
+                body: Bytes::from(format!("raw-body:{suffix}")),
+            });
+        }
+
         let mut body = request.params;
         body.insert(
             "model".to_string(),
             Value::String(request.context.provider_model.to_string()),
         );
         body.insert("messages".to_string(), request.messages);
+        body.extend(request.body_overrides);
 
         let body = serde_json::to_vec(&Value::Object(body)).map_err(|err| {
             SigmaError::ProviderTransform {
@@ -337,6 +376,23 @@ async fn mount_chat_response(server: &MockServer, event: &'static str, content: 
         .await;
 }
 
+async fn mount_static_chat_response(
+    server: &MockServer,
+    event: &'static str,
+    model: &'static str,
+    content: &'static str,
+) {
+    Mock::given(method("POST"))
+        .and(path("/chat"))
+        .respond_with(move |request: &WiremockRequest| {
+            let provider = provider_from_request(request);
+            push_event(&provider, event);
+            ResponseTemplate::new(200).set_body_json(response_body(model, content))
+        })
+        .mount(server)
+        .await;
+}
+
 async fn mount_bytes_response(server: &MockServer, event: &'static str, body: Vec<u8>) {
     Mock::given(method("POST"))
         .and(path("/chat"))
@@ -365,6 +421,11 @@ async fn mount_error_response(server: &MockServer, event: &'static str) {
 async fn last_body(server: &MockServer) -> Value {
     let requests = server.received_requests().await.unwrap();
     requests.last().unwrap().body_json().unwrap()
+}
+
+async fn last_raw_body(server: &MockServer) -> Vec<u8> {
+    let requests = server.received_requests().await.unwrap();
+    requests.last().unwrap().body.clone()
 }
 
 async fn request_count(server: &MockServer) -> usize {
@@ -693,6 +754,90 @@ async fn create_drops_unsupported_params_when_policy_drops() {
 }
 
 #[tokio::test]
+async fn create_applies_selected_provider_metadata_after_adapter_mapping() {
+    let server = MockServer::start().await;
+    let provider_id = "zhipu";
+    mount_chat_response(&server, "http.execute", "ok").await;
+    let client = client(
+        provider_id,
+        &server,
+        Value::Null,
+        ParamPolicy::RejectUnsupported,
+    );
+    let mut request = request(ModelRef::model("gpt-public"));
+    request.temperature = Some(0.2);
+    let mut overrides = ChatParameterMap::new();
+    overrides.insert("model".to_string(), json!("override-model"));
+    overrides.insert("temperature".to_string(), json!(0.9));
+    overrides.insert("provider_native".to_string(), json!(true));
+    request
+        .metadata
+        .insert(ProviderId::from(provider_id), overrides);
+
+    let response = client.chat().create(request).await.unwrap();
+
+    let body = last_body(&server).await;
+    assert_eq!(response.model, "override-model");
+    assert_eq!(body["model"], "override-model");
+    assert_eq!(body["temperature"], json!(0.9));
+    assert_eq!(body["provider_native"], json!(true));
+}
+
+#[tokio::test]
+async fn create_ignores_metadata_for_non_selected_provider() {
+    let server = MockServer::start().await;
+    let provider_id = "selected-provider";
+    mount_chat_response(&server, "http.execute", "ok").await;
+    let client = client(
+        provider_id,
+        &server,
+        Value::Null,
+        ParamPolicy::RejectUnsupported,
+    );
+    let mut request = request(ModelRef::model("gpt-public"));
+    request.temperature = Some(0.2);
+    let mut overrides = ChatParameterMap::new();
+    overrides.insert("temperature".to_string(), json!(0.9));
+    overrides.insert("provider_native".to_string(), json!(true));
+    request
+        .metadata
+        .insert(ProviderId::from("other-provider"), overrides);
+
+    client.chat().create(request).await.unwrap();
+
+    let body = last_body(&server).await;
+    assert!((body["temperature"].as_f64().unwrap() - 0.2).abs() < 0.000001);
+    assert!(body.get("provider_native").is_none());
+}
+
+#[tokio::test]
+async fn create_does_not_reparse_serialized_provider_body_for_metadata() {
+    let server = MockServer::start().await;
+    let provider_id = "p-raw-body";
+    mount_static_chat_response(&server, "http.execute", "raw-model", "ok").await;
+    let client = client(
+        provider_id,
+        &server,
+        json!({"request_body": "raw_text"}),
+        ParamPolicy::RejectUnsupported,
+    );
+    let mut request = request(ModelRef::model("gpt-public"));
+    let mut overrides = ChatParameterMap::new();
+    overrides.insert("provider_native".to_string(), json!(true));
+    request
+        .metadata
+        .insert(ProviderId::from(provider_id), overrides);
+
+    let response = client.chat().create(request).await.unwrap();
+
+    assert_eq!(response.model, "raw-model");
+    assert_eq!(
+        last_raw_body(&server).await,
+        b"raw-body:provider_native=true"
+    );
+}
+
+#[tokio::test]
 async fn create_lets_adapter_translate_developer_messages() {
     let server = MockServer::start().await;
     mount_chat_response(&server, "http.execute", "ok").await;
@@ -719,6 +864,35 @@ async fn create_lets_adapter_translate_developer_messages() {
     client.chat().create(request).await.unwrap();
 
     assert_eq!(last_body(&server).await["messages"][0]["role"], "system");
+}
+
+#[tokio::test]
+async fn create_stream_metadata_can_override_injected_stream_param() {
+    let server = MockServer::start().await;
+    let provider_id = "p-stream-override";
+    mount_bytes_response(
+        &server,
+        "http.stream",
+        stream_chunk_bytes("provider-gpt", "chunk"),
+    )
+    .await;
+    let client = client(
+        provider_id,
+        &server,
+        Value::Null,
+        ParamPolicy::RejectUnsupported,
+    );
+    let mut request = request(ModelRef::model("gpt-public"));
+    let mut overrides = ChatParameterMap::new();
+    overrides.insert("stream".to_string(), json!(false));
+    request
+        .metadata
+        .insert(ProviderId::from(provider_id), overrides);
+
+    let mut stream = client.chat().create_stream(request).await.unwrap();
+    let _ = stream.next().await.unwrap().unwrap();
+
+    assert_eq!(last_body(&server).await["stream"], json!(false));
 }
 
 #[tokio::test]

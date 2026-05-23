@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
 
+use crate::config::ProviderMetadataMap;
 use crate::error::SigmaError;
 use crate::model::ModelRef;
-use crate::types::Metadata;
 use crate::types::chat::messages::ChatCompletionRequestMessage;
 use crate::types::chat::options::{
     ChatCompletionAudio, ChatCompletionStreamOptions, PredictionContent, PromptCacheRetention,
@@ -100,6 +100,19 @@ pub struct CreateChatCompletionRequest {
     pub prompt_cache_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_cache_retention: Option<PromptCacheRetention>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<Metadata>,
+    /// Provider-scoped final request body overrides.
+    ///
+    /// The map key is a configured provider instance id, not a provider kind.
+    /// For example, a Zhipu AI endpoint configured with
+    /// `kind = "openai-compatible"` should use the provider id such as
+    /// `"zhipu"` here. When that provider is selected, its adapter
+    /// shallow-merges the matching object into the final provider request body
+    /// after parameter mapping and adapter-generated fields.
+    ///
+    /// Values in this map have the highest request-body priority and may
+    /// override generated fields such as `"model"`, `"messages"`, and
+    /// `"stream"`. To send a provider-native OpenAI-style `metadata` field,
+    /// include a `"metadata"` entry inside the provider's override object.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub metadata: ProviderMetadataMap,
 }

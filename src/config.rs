@@ -13,6 +13,20 @@ use crate::{DeploymentId, ModelName, ProviderId, ProviderKind};
 /// adapter has already transformed them.
 pub type ChatParameterMap = serde_json::Map<String, Value>;
 
+/// Provider-scoped chat request body overrides.
+///
+/// Keys are configured [`ProviderId`] values, not provider kinds. This keeps
+/// protocol drivers such as `"openai-compatible"` separate from the actual
+/// provider target, such as `"zhipu"` or `"deepseek"`.
+///
+/// Values are shallow top-level JSON object fragments that adapters apply to
+/// the final provider HTTP request body after parameter mapping and after
+/// adapter-generated fields such as `"model"`, `"messages"`, or `"stream"`.
+/// Matching entries have the highest request-body priority. To send a
+/// provider-native OpenAI-style `metadata` field, place it inside the selected
+/// provider's override object.
+pub type ProviderMetadataMap = HashMap<ProviderId, ChatParameterMap>;
+
 /// Redacted secret string for API keys and other provider credentials.
 ///
 /// `Debug` output never prints the secret value. Provider constructors can call

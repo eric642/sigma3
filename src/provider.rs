@@ -216,8 +216,10 @@ pub struct ChatAdapterContext {
 /// Provider-neutral request data passed through the chat adapter lifecycle.
 ///
 /// The adapter receives translated messages, merged parameters, and routing
-/// context. It then chooses an endpoint, serializes a provider request, signs
-/// it, and later transforms the response or stream using the same context.
+/// context. It then chooses an endpoint, applies provider-scoped body overrides
+/// while the body is still structured data, serializes a provider request,
+/// signs it, and later transforms the response or stream using the same
+/// context.
 #[derive(Debug, Clone)]
 pub struct ChatAdapterRequest {
     /// Routing metadata for this adapter call.
@@ -226,6 +228,12 @@ pub struct ChatAdapterRequest {
     pub messages: Value,
     /// Merged and policy-filtered chat parameters.
     pub params: ChatParameterMap,
+    /// Provider-scoped final request body overrides for the selected provider.
+    ///
+    /// Adapters should apply these shallow top-level fields after provider
+    /// parameter mapping and after adapter-generated fields such as `"model"`,
+    /// `"messages"`, or `"stream"`, but before serializing the request body.
+    pub body_overrides: ChatParameterMap,
 }
 
 /// Stream of OpenAI-compatible chat completion chunks returned by sigma.

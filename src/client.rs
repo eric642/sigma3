@@ -339,7 +339,7 @@ impl Client {
 
     fn prepare_provider_request<'a>(
         &self,
-        request: CreateChatCompletionRequest,
+        mut request: CreateChatCompletionRequest,
         route: ResolvedRoute,
         adapter: &'a dyn crate::ChatCompletionAdapter,
         stream_behavior: Option<crate::StreamBehavior>,
@@ -359,10 +359,15 @@ impl Client {
         adapter.validate_environment()?;
 
         let context = route.adapter_context();
+        let body_overrides = request
+            .metadata
+            .remove(&context.provider)
+            .unwrap_or_default();
         let adapter_request = ChatAdapterRequest {
             context: context.clone(),
             messages,
             params,
+            body_overrides,
         };
 
         let endpoint = adapter.endpoint(&adapter_request)?;
@@ -389,7 +394,7 @@ impl Client {
         })?;
 
         for (key, value) in object {
-            if key != "messages" && key != "model" {
+            if key != "messages" && key != "model" && key != "metadata" {
                 params.insert(key.clone(), value.clone());
             }
         }

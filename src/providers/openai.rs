@@ -220,6 +220,7 @@ impl ChatCompletionAdapter for OpenAiChatAdapter {
             Value::String(request.context.provider_model.to_string()),
         );
         body.insert("messages".to_string(), request.messages);
+        body.extend(request.body_overrides);
 
         let body = serde_json::to_vec(&Value::Object(body)).map_err(|err| {
             SigmaError::ProviderTransform {
