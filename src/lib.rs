@@ -45,6 +45,11 @@
 //! provider instances from [`ClientConfig::providers`] at [`Client::build`]
 //! time. Model routing is explicit through [`ModelRef`]; sigma does not infer a
 //! provider from model-name prefixes.
+//!
+//! sigma links built-in chat providers for OpenAI (`kind = "openai"`) and
+//! OpenAI-compatible HTTP endpoints (`kind = "openai-compatible"`). Both use
+//! the standard chat completions namespace and can be selected through
+//! deployment routing or [`ModelRef::provider_model`].
 
 mod client;
 mod config;
@@ -52,6 +57,7 @@ pub mod error;
 mod model;
 mod provider;
 mod provider_http;
+mod providers;
 pub mod types;
 
 #[doc(hidden)]
