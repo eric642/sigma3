@@ -11,7 +11,7 @@ A general-purpose LLM API client.
 ## Architecture Rules
 
 - Scope is chat-only and async-only unless a design explicitly expands it.
-- Preserve the public namespace call shape: `client.chat().create(request).await` and `client.chat().create_stream(request).await`.
+- Preserve the public namespace call shape: `client.chat().create(&request).await` and `client.chat().create_stream(&request).await`.
 - Keep the layering explicit: `Client namespace -> Deployment routing -> ProviderDriver -> ChatCompletionAdapter/BaseConfig hooks -> reqwest HTTP execution`.
 - Provider discovery is inventory-driven. Do not add manual provider factory registration APIs to `Client` or `ClientBuilder`.
 - Provider registrations must be static, linkable data collected by inventory in core and submitted through `submit_provider!`. Use function pointers for constructors, not closures or runtime registries.

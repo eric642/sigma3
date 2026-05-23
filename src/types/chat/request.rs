@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
 
-use crate::config::ProviderMetadataMap;
+use crate::config::{ChatParameterMap, ProviderMetadataMap};
 use crate::error::SigmaError;
 use crate::model::ModelRef;
 use crate::types::chat::messages::ChatCompletionRequestMessage;
@@ -46,60 +46,13 @@ pub struct CreateChatCompletionRequest {
     /// provider-model routing in Rust.
     pub model: ModelRef,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub modalities: Option<Vec<ResponseModalities>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub verbosity: Option<Verbosity>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasoning_effort: Option<ReasoningEffort>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_completion_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub frequency_penalty: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub presence_penalty: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub web_search_options: Option<WebSearchOptions>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub top_logprobs: Option<u8>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub response_format: Option<ResponseFormat>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub audio: Option<ChatCompletionAudio>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub store: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stream: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stop: Option<StopConfiguration>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub logit_bias: Option<HashMap<String, i8>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub logprobs: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub n: Option<u8>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub prediction: Option<PredictionContent>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stream_options: Option<ChatCompletionStreamOptions>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub service_tier: Option<ServiceTier>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub temperature: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub top_p: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tools: Option<Vec<ChatCompletionTools>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_choice: Option<ChatCompletionToolChoiceOption>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parallel_tool_calls: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub safety_identifier: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub prompt_cache_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub prompt_cache_retention: Option<PromptCacheRetention>,
+    /// OpenAI-compatible chat completion parameters.
+    ///
+    /// These fields are flattened into the serialized request body so the wire
+    /// format remains OpenAI-compatible while keeping routing fields separate
+    /// from model parameters in Rust.
+    #[serde(flatten)]
+    pub params: CreateChatCompletionRequestParams,
     /// Provider-scoped final request body overrides.
     ///
     /// The map key is a configured provider instance id, not a provider kind.
@@ -115,4 +68,164 @@ pub struct CreateChatCompletionRequest {
     /// include a `"metadata"` entry inside the provider's override object.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub metadata: ProviderMetadataMap,
+}
+
+/// OpenAI-compatible chat completion parameters.
+///
+/// This type contains request fields that are sent as provider parameters after
+/// deployment defaults are applied and routing-only fields are removed. It is
+/// flattened into [`CreateChatCompletionRequest`] during JSON serialization.
+#[derive(Clone, Serialize, Default, Debug, Builder, Deserialize, PartialEq)]
+#[builder(name = "CreateChatCompletionRequestParamsArgs")]
+#[builder(pattern = "mutable")]
+#[builder(setter(into, strip_option), default)]
+#[builder(derive(Debug))]
+#[builder(build_fn(error = "SigmaError"))]
+pub struct CreateChatCompletionRequestParams {
+    /// Output modalities requested from multimodal-capable models.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modalities: Option<Vec<ResponseModalities>>,
+    /// Controls text verbosity for models that support verbosity tuning.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verbosity: Option<Verbosity>,
+    /// Reasoning effort requested for reasoning-capable models.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ReasoningEffort>,
+    /// Maximum number of completion tokens the model may generate.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_completion_tokens: Option<u32>,
+    /// Penalty applied to repeated token frequency.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frequency_penalty: Option<f32>,
+    /// Penalty applied when tokens have already appeared in the context.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub presence_penalty: Option<f32>,
+    /// Web search controls for providers that support hosted search.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web_search_options: Option<WebSearchOptions>,
+    /// Number of top log probabilities to include when logprobs are enabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_logprobs: Option<u8>,
+    /// Requested response formatting mode or schema.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<ResponseFormat>,
+    /// Audio output configuration for audio-capable models.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio: Option<ChatCompletionAudio>,
+    /// Whether the provider should store the completion when supported.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub store: Option<bool>,
+    /// Whether the request asks for provider streaming.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream: Option<bool>,
+    /// Stop sequence configuration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop: Option<StopConfiguration>,
+    /// Token bias map keyed by provider tokenizer token id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logit_bias: Option<HashMap<String, i8>>,
+    /// Whether token log probabilities should be returned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logprobs: Option<bool>,
+    /// Number of completions to generate.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub n: Option<u8>,
+    /// Predicted output content for providers that support prediction hints.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prediction: Option<PredictionContent>,
+    /// Options that control streamed responses.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_options: Option<ChatCompletionStreamOptions>,
+    /// Provider service tier selection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<ServiceTier>,
+    /// Sampling temperature.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    /// Nucleus sampling probability.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
+    /// Tools the model may call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<ChatCompletionTools>>,
+    /// Tool selection mode or named tool choice.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<ChatCompletionToolChoiceOption>,
+    /// Whether the model may issue multiple tool calls in parallel.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parallel_tool_calls: Option<bool>,
+    /// Stable safety identifier for provider abuse monitoring.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safety_identifier: Option<String>,
+    /// Prompt cache key for providers that support prompt caching.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_key: Option<String>,
+    /// Prompt cache retention policy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_retention: Option<PromptCacheRetention>,
+}
+
+impl CreateChatCompletionRequest {
+    pub(crate) fn chat_parameters(&self) -> Result<ChatParameterMap, SigmaError> {
+        match serde_json::to_value(&self.params)
+            .map_err(|err| SigmaError::InvalidArgument(err.to_string()))?
+        {
+            serde_json::Value::Object(params) => Ok(params),
+            _ => Err(SigmaError::InvalidArgument(
+                "chat completion request parameters did not serialize to an object".to_string(),
+            )),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::config::ChatParameterMap;
+    use crate::model::ProviderId;
+    use crate::types::chat::messages::{
+        ChatCompletionRequestUserMessage, ChatCompletionRequestUserMessageContent,
+    };
+
+    #[test]
+    fn chat_parameters_match_serialized_request_without_routing_fields() {
+        let mut overrides = ChatParameterMap::new();
+        overrides.insert("metadata".to_string(), json!({"trace_id": "trace-123"}));
+
+        let request = CreateChatCompletionRequestArgs::default()
+            .messages(vec![ChatCompletionRequestMessage::User(
+                ChatCompletionRequestUserMessage {
+                    content: ChatCompletionRequestUserMessageContent::Text("hi".to_string()),
+                    name: None,
+                },
+            )])
+            .model(ModelRef::model("gpt-public"))
+            .params(
+                CreateChatCompletionRequestParamsArgs::default()
+                    .temperature(0.7)
+                    .n(2)
+                    .build()
+                    .unwrap(),
+            )
+            .metadata(HashMap::from([(ProviderId::from("selected"), overrides)]))
+            .build()
+            .unwrap();
+        let mut expected = serde_json::to_value(&request)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .clone();
+        expected.remove("messages");
+        expected.remove("model");
+        expected.remove("metadata");
+
+        let params = request.chat_parameters().unwrap();
+
+        assert!(!params.contains_key("messages"));
+        assert!(!params.contains_key("model"));
+        assert!(!params.contains_key("metadata"));
+        assert_eq!(params, expected);
+    }
 }

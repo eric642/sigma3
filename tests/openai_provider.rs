@@ -5,7 +5,7 @@ use http::StatusCode;
 use serde_json::{Value, json};
 use sigma::types::chat::{
     ChatCompletionRequestMessage, ChatCompletionRequestUserMessage, CreateChatCompletionRequest,
-    CreateChatCompletionRequestArgs,
+    CreateChatCompletionRequestArgs, CreateChatCompletionRequestParamsArgs,
 };
 use sigma::{
     ChatParameterMap, Client, ClientConfig, ModelDeploymentConfig, ModelName, ModelRef,
@@ -51,7 +51,12 @@ fn request(model: ModelRef) -> CreateChatCompletionRequest {
             ChatCompletionRequestUserMessage::from("hello"),
         )])
         .model(model)
-        .temperature(0.2f32)
+        .params(
+            CreateChatCompletionRequestParamsArgs::default()
+                .temperature(0.2f32)
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap()
 }
@@ -129,7 +134,7 @@ async fn openai_create_posts_openai_chat_completion_body() {
 
     let response = client
         .chat()
-        .create(request(ModelRef::model("gpt-public")))
+        .create(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap();
 
@@ -167,7 +172,7 @@ async fn openai_create_adds_bearer_auth_and_json_content_type() {
 
     client
         .chat()
-        .create(request(ModelRef::model("gpt-public")))
+        .create(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap();
 
@@ -213,7 +218,7 @@ async fn openai_create_preserves_configured_authorization_header() {
 
     client
         .chat()
-        .create(request(ModelRef::model("gpt-public")))
+        .create(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap();
 
@@ -248,7 +253,7 @@ async fn compatible_create_allows_missing_api_key_and_appends_chat_completions()
 
     client
         .chat()
-        .create(request(ModelRef::model("gpt-public")))
+        .create(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap();
 
@@ -282,7 +287,7 @@ async fn compatible_create_does_not_append_chat_completions_twice() {
 
     client
         .chat()
-        .create(request(ModelRef::model("gpt-public")))
+        .create(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap();
 
@@ -315,7 +320,7 @@ async fn compatible_create_sends_provider_metadata_from_provider_override() {
         .metadata
         .insert(ProviderId::from(provider_id), overrides);
 
-    client.chat().create(request).await.unwrap();
+    client.chat().create(&request).await.unwrap();
 
     assert_eq!(
         last_body(&server).await["metadata"],
@@ -342,9 +347,9 @@ async fn compatible_create_maps_max_completion_tokens_to_max_tokens_by_default()
     ))
     .unwrap();
     let mut request = request(ModelRef::model("gpt-public"));
-    request.max_completion_tokens = Some(42);
+    request.params.max_completion_tokens = Some(42);
 
-    client.chat().create(request).await.unwrap();
+    client.chat().create(&request).await.unwrap();
 
     let body = last_body(&server).await;
     assert_eq!(body["max_tokens"], 42);
@@ -390,7 +395,7 @@ async fn compatible_create_sanitizes_null_usage_token_counts() {
 
     let response = client
         .chat()
-        .create(request(ModelRef::model("gpt-public")))
+        .create(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap();
 
@@ -426,7 +431,7 @@ async fn create_maps_openai_error_body_to_provider_business_error() {
 
     let err = client
         .chat()
-        .create(request(ModelRef::model("gpt-public")))
+        .create(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap_err();
 
@@ -498,7 +503,7 @@ async fn create_stream_parses_openai_sse_frames_and_done_marker() {
 
     let chunks = client
         .chat()
-        .create_stream(request(ModelRef::model("gpt-public")))
+        .create_stream(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap()
         .collect::<Vec<_>>()

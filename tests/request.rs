@@ -4,7 +4,8 @@ use serde_json::json;
 use sigma::types::chat::{
     ChatCompletionRequestMessage, ChatCompletionRequestUserMessage,
     ChatCompletionRequestUserMessageContent, CreateChatCompletionRequest,
-    CreateChatCompletionRequestArgs, Prompt, StopConfiguration,
+    CreateChatCompletionRequestArgs, CreateChatCompletionRequestParamsArgs, Prompt,
+    StopConfiguration,
 };
 use sigma::{ChatParameterMap, ProviderId};
 
@@ -52,7 +53,7 @@ fn create_request_round_trip() {
         r#"{"messages":[{"role":"user","content":"hi"}],"model":"gpt-4o","temperature":0.7}"#;
     let req: CreateChatCompletionRequest = serde_json::from_str(json).unwrap();
     assert_eq!(req.model, "gpt-4o");
-    assert_eq!(req.temperature, Some(0.7));
+    assert_eq!(req.params.temperature, Some(0.7));
 }
 
 #[test]
@@ -91,4 +92,27 @@ fn create_request_metadata_round_trips_as_provider_body_overrides() {
         back.metadata.get(&ProviderId::from("zhipu")),
         Some(&zhipu_overrides)
     );
+}
+
+#[test]
+fn create_request_params_flatten_into_request_json() {
+    let params = CreateChatCompletionRequestParamsArgs::default()
+        .temperature(0.7)
+        .n(2)
+        .build()
+        .unwrap();
+    let req = CreateChatCompletionRequestArgs::default()
+        .messages(vec![ChatCompletionRequestMessage::User(
+            ChatCompletionRequestUserMessage::from("hi"),
+        )])
+        .model("gpt-4o")
+        .params(params)
+        .build()
+        .unwrap();
+
+    let value = serde_json::to_value(&req).unwrap();
+
+    assert_eq!(value["temperature"], json!(0.7f32));
+    assert_eq!(value["n"], json!(2));
+    assert!(value.get("params").is_none());
 }

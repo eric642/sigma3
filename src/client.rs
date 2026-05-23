@@ -171,7 +171,7 @@ impl Client {
     ///
     /// Use the returned namespace to create regular or streaming chat
     /// completions:
-    /// `client.chat().create(request).await`.
+    /// `client.chat().create(&request).await`.
     pub fn chat(&self) -> ChatNamespace<'_> {
         ChatNamespace { client: self }
     }
@@ -200,7 +200,7 @@ impl ChatNamespace<'_> {
     /// provider response errors.
     pub async fn create(
         &self,
-        request: CreateChatCompletionRequest,
+        request: &CreateChatCompletionRequest,
     ) -> SigmaResult<crate::types::chat::CreateChatCompletionResponse> {
         self.client.create_chat_completion(request).await
     }
@@ -217,7 +217,7 @@ impl ChatNamespace<'_> {
     /// provider response errors.
     pub async fn create_stream(
         &self,
-        request: CreateChatCompletionRequest,
+        request: &CreateChatCompletionRequest,
     ) -> SigmaResult<ChatStream> {
         self.client.create_chat_completion_stream(request).await
     }
@@ -234,14 +234,12 @@ struct ResolvedRoute {
 impl Client {
     async fn create_chat_completion(
         &self,
-        request: CreateChatCompletionRequest,
+        request: &CreateChatCompletionRequest,
     ) -> SigmaResult<crate::types::chat::CreateChatCompletionResponse> {
         let route = self.resolve_route(&request.model)?;
 
         if let Some(custom_chat) = route.provider.custom_chat() {
-            return custom_chat
-                .create(route.clone().into_routed_request(request))
-                .await;
+            return custom_chat.create(route.to_routed_request(request)).await;
         }
 
         let provider = Arc::clone(&route.provider);
@@ -251,7 +249,7 @@ impl Client {
                 provider: provider.id().clone(),
             })?;
         let (signed_request, adapter, context) =
-            self.prepare_provider_request(request, route, adapter, None)?;
+            self.prepare_provider_request(request, &route, adapter, None)?;
         let response = self.execute_http(signed_request).await?;
 
         transform_response_or_error(adapter, &context, response)
@@ -259,13 +257,13 @@ impl Client {
 
     async fn create_chat_completion_stream(
         &self,
-        request: CreateChatCompletionRequest,
+        request: &CreateChatCompletionRequest,
     ) -> SigmaResult<ChatStream> {
         let route = self.resolve_route(&request.model)?;
 
         if let Some(custom_chat) = route.provider.custom_chat() {
             return custom_chat
-                .create_stream(route.clone().into_routed_request(request))
+                .create_stream(route.to_routed_request(request))
                 .await;
         }
 
@@ -277,7 +275,7 @@ impl Client {
             })?;
         let stream_behavior = adapter.stream_behavior();
         let (signed_request, adapter, context) =
-            self.prepare_provider_request(request, route, adapter, Some(stream_behavior))?;
+            self.prepare_provider_request(request, &route, adapter, Some(stream_behavior))?;
 
         if stream_behavior.mode == StreamMode::FakeFromResponse {
             let response = self.execute_http(signed_request).await?;
@@ -308,7 +306,7 @@ impl Client {
         &self,
         request: crate::SignedProviderRequest,
         adapter: &dyn crate::ChatCompletionAdapter,
-        context: &crate::ChatAdapterContext,
+        context: &crate::ChatAdapterContext<'_>,
     ) -> SigmaResult<crate::ProviderByteStream> {
         let response = self
             .http_request(request)
@@ -339,16 +337,16 @@ impl Client {
 
     fn prepare_provider_request<'a>(
         &self,
-        mut request: CreateChatCompletionRequest,
-        route: ResolvedRoute,
+        request: &'a CreateChatCompletionRequest,
+        route: &'a ResolvedRoute,
         adapter: &'a dyn crate::ChatCompletionAdapter,
         stream_behavior: Option<crate::StreamBehavior>,
     ) -> SigmaResult<(
         crate::SignedProviderRequest,
         &'a dyn crate::ChatCompletionAdapter,
-        crate::ChatAdapterContext,
+        crate::ChatAdapterContext<'a>,
     )> {
-        let mut params = self.chat_params(&request, route.deployment.as_ref())?;
+        let mut params = self.chat_params(request, route.deployment.as_ref())?;
         if stream_behavior.is_some_and(|behavior| behavior.inject_stream) {
             params.insert("stream".to_string(), Value::Bool(true));
         }
@@ -359,12 +357,9 @@ impl Client {
         adapter.validate_environment()?;
 
         let context = route.adapter_context();
-        let body_overrides = request
-            .metadata
-            .remove(&context.provider)
-            .unwrap_or_default();
+        let body_overrides = request.metadata.get(context.provider);
         let adapter_request = ChatAdapterRequest {
-            context: context.clone(),
+            context,
             messages,
             params,
             body_overrides,
@@ -385,19 +380,7 @@ impl Client {
         let mut params = deployment
             .map(|deployment| deployment.defaults.clone())
             .unwrap_or_default();
-        let value = serde_json::to_value(request)
-            .map_err(|err| SigmaError::InvalidArgument(err.to_string()))?;
-        let object = value.as_object().ok_or_else(|| {
-            SigmaError::InvalidArgument(
-                "chat completion request did not serialize to an object".to_string(),
-            )
-        })?;
-
-        for (key, value) in object {
-            if key != "messages" && key != "model" && key != "metadata" {
-                params.insert(key.clone(), value.clone());
-            }
-        }
+        params.extend(request.chat_parameters()?);
 
         Ok(params)
     }
@@ -522,28 +505,25 @@ impl Client {
 }
 
 impl ResolvedRoute {
-    fn adapter_context(&self) -> ChatAdapterContext {
+    fn adapter_context(&self) -> ChatAdapterContext<'_> {
         ChatAdapterContext {
-            provider: self.provider.id().clone(),
-            deployment: self
-                .deployment
-                .as_ref()
-                .map(|deployment| deployment.id.clone()),
-            public_model: self.public_model.clone(),
-            provider_model: self.provider_model.clone(),
+            provider: self.provider.id(),
+            deployment: self.deployment.as_ref().map(|deployment| &deployment.id),
+            public_model: &self.public_model,
+            provider_model: &self.provider_model,
             model_info: deployment_model_info(self.deployment.as_ref()),
         }
     }
 
-    fn into_routed_request(self, request: CreateChatCompletionRequest) -> crate::RoutedChatRequest {
+    fn to_routed_request<'a>(
+        &'a self,
+        request: &'a CreateChatCompletionRequest,
+    ) -> crate::RoutedChatRequest<'a> {
         crate::RoutedChatRequest {
-            provider: self.provider.id().clone(),
-            deployment: self
-                .deployment
-                .as_ref()
-                .map(|deployment| deployment.id.clone()),
-            public_model: self.public_model,
-            provider_model: self.provider_model,
+            provider: self.provider.id(),
+            deployment: self.deployment.as_ref().map(|deployment| &deployment.id),
+            public_model: &self.public_model,
+            provider_model: &self.provider_model,
             model_info: deployment_model_info(self.deployment.as_ref()),
             request,
         }
@@ -558,7 +538,7 @@ fn http_error(error: reqwest::Error) -> SigmaError {
 
 fn transform_response_or_error(
     adapter: &dyn crate::ChatCompletionAdapter,
-    context: &crate::ChatAdapterContext,
+    context: &crate::ChatAdapterContext<'_>,
     response: crate::ProviderResponse,
 ) -> SigmaResult<CreateChatCompletionResponse> {
     if response.status.is_success() {

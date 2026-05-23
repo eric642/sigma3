@@ -1,6 +1,7 @@
 use sigma::types::chat::{
     ChatCompletionRequestMessage, ChatCompletionRequestUserMessage, ChatCompletionTool,
-    ChatCompletionTools, CreateChatCompletionRequestArgs, CreateChatCompletionResponse,
+    ChatCompletionTools, CreateChatCompletionRequestArgs, CreateChatCompletionRequestParamsArgs,
+    CreateChatCompletionResponse,
 };
 use sigma::types::shared::FunctionObject;
 
@@ -11,15 +12,20 @@ fn build_request_with_tool() {
             ChatCompletionRequestUserMessage::from("hello"),
         )])
         .model("gpt-4o")
-        .tools(vec![ChatCompletionTools::Function(ChatCompletionTool {
-            function: FunctionObject {
-                name: "get_weather".into(),
-                description: Some("Get the weather".into()),
-                parameters: Some(serde_json::json!({"type":"object","properties":{}})),
-                strict: None,
-            },
-        })])
-        .temperature(0.7f32)
+        .params(
+            CreateChatCompletionRequestParamsArgs::default()
+                .tools(vec![ChatCompletionTools::Function(ChatCompletionTool {
+                    function: FunctionObject {
+                        name: "get_weather".into(),
+                        description: Some("Get the weather".into()),
+                        parameters: Some(serde_json::json!({"type":"object","properties":{}})),
+                        strict: None,
+                    },
+                })])
+                .temperature(0.7f32)
+                .build()
+                .unwrap(),
+        )
         .build()
         .unwrap();
 

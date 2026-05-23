@@ -161,35 +161,39 @@ pub trait ProviderDriver: Send + Sync {
 }
 
 /// Fully routed chat request passed to a [`CustomChatProvider`].
-#[derive(Debug, Clone)]
-pub struct RoutedChatRequest {
+#[derive(Debug, Clone, Copy)]
+pub struct RoutedChatRequest<'a> {
     /// Provider instance selected for the request.
-    pub provider: ProviderId,
+    pub provider: &'a ProviderId,
     /// Deployment selected for the request, if routing used one.
-    pub deployment: Option<DeploymentId>,
+    pub deployment: Option<&'a DeploymentId>,
     /// Public model name requested by the caller or deployment.
-    pub public_model: ModelName,
+    pub public_model: &'a ModelName,
     /// Provider-native model name to use.
-    pub provider_model: ModelName,
+    pub provider_model: &'a ModelName,
     /// Original chat completion request.
-    pub request: CreateChatCompletionRequest,
-    /// Opaque model metadata from the selected deployment.
-    pub model_info: Value,
+    pub request: &'a CreateChatCompletionRequest,
+    /// Opaque model metadata from the selected deployment, when routing used one.
+    pub model_info: Option<&'a Value>,
 }
 
 /// Optional provider capability for fully custom chat handling.
 ///
 /// Implement this when a provider needs to bypass sigma's generic adapter and
 /// HTTP execution pipeline. Most HTTP JSON providers should implement
-/// [`ChatCompletionAdapter`] instead.
+/// [`ChatCompletionAdapter`] instead. Routed request fields are borrowed for
+/// the duration of the call; custom providers should clone only the values they
+/// must keep beyond the returned future or stream construction.
 #[async_trait]
 pub trait CustomChatProvider: Send + Sync {
     /// Creates one chat completion through provider-specific code.
-    async fn create(&self, request: RoutedChatRequest)
-    -> SigmaResult<CreateChatCompletionResponse>;
+    async fn create(
+        &self,
+        request: RoutedChatRequest<'_>,
+    ) -> SigmaResult<CreateChatCompletionResponse>;
 
     /// Creates a streaming chat completion through provider-specific code.
-    async fn create_stream(&self, request: RoutedChatRequest) -> SigmaResult<ChatStream>;
+    async fn create_stream(&self, request: RoutedChatRequest<'_>) -> SigmaResult<ChatStream>;
 }
 
 /// Routing metadata shared across chat adapter request and response hooks.
@@ -199,18 +203,18 @@ pub trait CustomChatProvider: Send + Sync {
 /// single routed chat request. Adapters receive it again when transforming
 /// regular responses or provider byte streams so parsing can depend on the same
 /// routing state used to build the request.
-#[derive(Debug, Clone)]
-pub struct ChatAdapterContext {
+#[derive(Debug, Clone, Copy)]
+pub struct ChatAdapterContext<'a> {
     /// Provider instance selected for the request.
-    pub provider: ProviderId,
+    pub provider: &'a ProviderId,
     /// Deployment selected for the request, if routing used one.
-    pub deployment: Option<DeploymentId>,
+    pub deployment: Option<&'a DeploymentId>,
     /// Public model name requested by the caller or deployment.
-    pub public_model: ModelName,
+    pub public_model: &'a ModelName,
     /// Provider-native model name to send to the provider.
-    pub provider_model: ModelName,
-    /// Opaque model metadata from the selected deployment.
-    pub model_info: Value,
+    pub provider_model: &'a ModelName,
+    /// Opaque model metadata from the selected deployment, when routing used one.
+    pub model_info: Option<&'a Value>,
 }
 
 /// Provider-neutral request data passed through the chat adapter lifecycle.
@@ -221,19 +225,22 @@ pub struct ChatAdapterContext {
 /// signs it, and later transforms the response or stream using the same
 /// context.
 #[derive(Debug, Clone)]
-pub struct ChatAdapterRequest {
+pub struct ChatAdapterRequest<'a> {
     /// Routing metadata for this adapter call.
-    pub context: ChatAdapterContext,
+    pub context: ChatAdapterContext<'a>,
     /// Provider-specific representation of request messages.
     pub messages: Value,
     /// Merged and policy-filtered chat parameters.
     pub params: ChatParameterMap,
     /// Provider-scoped final request body overrides for the selected provider.
     ///
+    /// This is [`None`] when the request has no metadata entry for the selected
+    /// provider.
+    ///
     /// Adapters should apply these shallow top-level fields after provider
     /// parameter mapping and after adapter-generated fields such as `"model"`,
     /// `"messages"`, or `"stream"`, but before serializing the request body.
-    pub body_overrides: ChatParameterMap,
+    pub body_overrides: Option<&'a ChatParameterMap>,
 }
 
 /// Stream of OpenAI-compatible chat completion chunks returned by sigma.
@@ -321,12 +328,12 @@ pub trait ChatCompletionAdapter: Send + Sync {
     fn validate_environment(&self) -> SigmaResult<()>;
 
     /// Selects the provider endpoint for a prepared chat request.
-    fn endpoint(&self, request: &ChatAdapterRequest) -> SigmaResult<ProviderEndpoint>;
+    fn endpoint(&self, request: &ChatAdapterRequest<'_>) -> SigmaResult<ProviderEndpoint>;
 
     /// Serializes a prepared chat request into a provider HTTP request.
     fn transform_request(
         &self,
-        request: ChatAdapterRequest,
+        request: ChatAdapterRequest<'_>,
         endpoint: ProviderEndpoint,
     ) -> SigmaResult<ProviderRequest>;
 
@@ -341,7 +348,7 @@ pub trait ChatCompletionAdapter: Send + Sync {
     /// [`CustomChatProvider`] instead of the generic adapter.
     fn transform_response(
         &self,
-        context: &ChatAdapterContext,
+        context: &ChatAdapterContext<'_>,
         response: ProviderResponse,
     ) -> SigmaResult<CreateChatCompletionResponse>;
 
@@ -355,7 +362,7 @@ pub trait ChatCompletionAdapter: Send + Sync {
     /// an HTTP response still return [`SigmaError::Http`].
     fn transform_error_response(
         &self,
-        context: &ChatAdapterContext,
+        context: &ChatAdapterContext<'_>,
         response: ProviderResponse,
     ) -> SigmaError {
         let message = if response.body.is_empty() {
@@ -369,7 +376,7 @@ pub trait ChatCompletionAdapter: Send + Sync {
         };
 
         SigmaError::ProviderBusiness {
-            provider: context.provider.clone(),
+            provider: context.provider.to_owned(),
             status: response.status,
             code: None,
             message,
@@ -386,7 +393,7 @@ pub trait ChatCompletionAdapter: Send + Sync {
     /// execution should implement [`CustomChatProvider`].
     fn transform_stream(
         &self,
-        context: &ChatAdapterContext,
+        context: &ChatAdapterContext<'_>,
         stream: ProviderByteStream,
     ) -> SigmaResult<ChatStream>;
 
@@ -426,10 +433,8 @@ pub(crate) fn response_to_stream_chunk(
     }
 }
 
-pub(crate) fn deployment_model_info(deployment: Option<&ModelDeploymentConfig>) -> Value {
-    deployment
-        .map(|deployment| deployment.model_info.clone())
-        .unwrap_or(Value::Null)
+pub(crate) fn deployment_model_info(deployment: Option<&ModelDeploymentConfig>) -> Option<&Value> {
+    deployment.map(|deployment| &deployment.model_info)
 }
 
 /// Registers a provider constructor in sigma's distributed inventory.

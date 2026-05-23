@@ -3,8 +3,8 @@
 //! sigma separates the user-facing client API from provider-specific driver
 //! code. Applications build a [`Client`] from a [`ClientConfig`], then call the
 //! namespaced chat API:
-//! `client.chat().create(request).await` or
-//! `client.chat().create_stream(request).await`.
+//! `client.chat().create(&request).await` or
+//! `client.chat().create_stream(&request).await`.
 //!
 //! ```no_run
 //! # use std::collections::HashMap;

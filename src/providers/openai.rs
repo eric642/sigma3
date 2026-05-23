@@ -8,6 +8,8 @@ use bytes::Bytes;
 use futures_core::Stream;
 use http::header::{AUTHORIZATION, CONTENT_TYPE};
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
+use serde::Serialize;
+use serde::ser::{SerializeMap, Serializer};
 use serde_json::Value;
 
 use crate::config::{ChatParameterMap, SecretString};
@@ -18,9 +20,9 @@ use crate::types::chat::{
     ChatCompletionRequestMessage, CreateChatCompletionResponse, CreateChatCompletionStreamResponse,
 };
 use crate::{
-    ChatAdapterContext, ChatAdapterRequest, ChatCompletionAdapter, ChatStream, ProviderDriver,
-    ProviderId, ProviderInit, ProviderKind, ProviderKindStatic, SigmaError, SigmaResult,
-    StreamBehavior, submit_provider,
+    ChatAdapterContext, ChatAdapterRequest, ChatCompletionAdapter, ChatStream, ModelName,
+    ProviderDriver, ProviderId, ProviderInit, ProviderKind, ProviderKindStatic, SigmaError,
+    SigmaResult, StreamBehavior, submit_provider,
 };
 
 const OPENAI_KIND: ProviderKindStatic = ProviderKindStatic::new("openai");
@@ -175,6 +177,68 @@ struct OpenAiChatAdapter {
     flavor: OpenAiFlavor,
 }
 
+struct OpenAiChatBody<'a> {
+    params: &'a ChatParameterMap,
+    provider_model: &'a ModelName,
+    messages: &'a Value,
+    body_overrides: Option<&'a ChatParameterMap>,
+}
+
+impl Serialize for OpenAiChatBody<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut len = self
+            .params
+            .keys()
+            .filter(|key| {
+                !is_generated_body_key(key.as_str())
+                    && !contains_body_override(self.body_overrides, key.as_str())
+            })
+            .count();
+
+        if !contains_body_override(self.body_overrides, "model") {
+            len += 1;
+        }
+        if !contains_body_override(self.body_overrides, "messages") {
+            len += 1;
+        }
+        if let Some(body_overrides) = self.body_overrides {
+            len += body_overrides.len();
+        }
+
+        let mut map = serializer.serialize_map(Some(len))?;
+        for (key, value) in self.params {
+            if !is_generated_body_key(key.as_str())
+                && !contains_body_override(self.body_overrides, key.as_str())
+            {
+                map.serialize_entry(key, value)?;
+            }
+        }
+        if !contains_body_override(self.body_overrides, "model") {
+            map.serialize_entry("model", self.provider_model)?;
+        }
+        if !contains_body_override(self.body_overrides, "messages") {
+            map.serialize_entry("messages", self.messages)?;
+        }
+        if let Some(body_overrides) = self.body_overrides {
+            for (key, value) in body_overrides {
+                map.serialize_entry(key, value)?;
+            }
+        }
+        map.end()
+    }
+}
+
+fn is_generated_body_key(key: &str) -> bool {
+    key == "model" || key == "messages"
+}
+
+fn contains_body_override(body_overrides: Option<&ChatParameterMap>, key: &str) -> bool {
+    body_overrides.is_some_and(|body_overrides| body_overrides.contains_key(key))
+}
+
 impl ChatCompletionAdapter for OpenAiChatAdapter {
     fn supported_openai_params(&self) -> Vec<&'static str> {
         SUPPORTED_OPENAI_CHAT_PARAMS.to_vec()
@@ -202,7 +266,7 @@ impl ChatCompletionAdapter for OpenAiChatAdapter {
         Ok(())
     }
 
-    fn endpoint(&self, _request: &ChatAdapterRequest) -> SigmaResult<ProviderEndpoint> {
+    fn endpoint(&self, _request: &ChatAdapterRequest<'_>) -> SigmaResult<ProviderEndpoint> {
         Ok(ProviderEndpoint {
             method: Method::POST,
             url: chat_completions_url(&self.api_base),
@@ -211,22 +275,18 @@ impl ChatCompletionAdapter for OpenAiChatAdapter {
 
     fn transform_request(
         &self,
-        request: ChatAdapterRequest,
+        request: ChatAdapterRequest<'_>,
         endpoint: ProviderEndpoint,
     ) -> SigmaResult<ProviderRequest> {
-        let mut body = request.params;
-        body.insert(
-            "model".to_string(),
-            Value::String(request.context.provider_model.to_string()),
-        );
-        body.insert("messages".to_string(), request.messages);
-        body.extend(request.body_overrides);
-
-        let body = serde_json::to_vec(&Value::Object(body)).map_err(|err| {
-            SigmaError::ProviderTransform {
-                provider: self.provider.clone(),
-                message: err.to_string(),
-            }
+        let body = serde_json::to_vec(&OpenAiChatBody {
+            params: &request.params,
+            provider_model: request.context.provider_model,
+            messages: &request.messages,
+            body_overrides: request.body_overrides,
+        })
+        .map_err(|err| SigmaError::ProviderTransform {
+            provider: self.provider.clone(),
+            message: err.to_string(),
         })?;
 
         let mut headers = self.headers.clone();
@@ -260,7 +320,7 @@ impl ChatCompletionAdapter for OpenAiChatAdapter {
 
     fn transform_response(
         &self,
-        _context: &ChatAdapterContext,
+        _context: &ChatAdapterContext<'_>,
         response: ProviderResponse,
     ) -> SigmaResult<CreateChatCompletionResponse> {
         let mut body = parse_response_json(&self.provider, response.body.as_ref())?;
@@ -276,7 +336,7 @@ impl ChatCompletionAdapter for OpenAiChatAdapter {
 
     fn transform_error_response(
         &self,
-        context: &ChatAdapterContext,
+        context: &ChatAdapterContext<'_>,
         response: ProviderResponse,
     ) -> SigmaError {
         openai_error_response(context, response)
@@ -284,7 +344,7 @@ impl ChatCompletionAdapter for OpenAiChatAdapter {
 
     fn transform_stream(
         &self,
-        _context: &ChatAdapterContext,
+        _context: &ChatAdapterContext<'_>,
         stream: ProviderByteStream,
     ) -> SigmaResult<ChatStream> {
         Ok(Box::pin(OpenAiSseStream::new(
@@ -530,7 +590,10 @@ fn sanitize_null_usage_tokens(value: &mut Value) {
     }
 }
 
-fn openai_error_response(context: &ChatAdapterContext, response: ProviderResponse) -> SigmaError {
+fn openai_error_response(
+    context: &ChatAdapterContext<'_>,
+    response: ProviderResponse,
+) -> SigmaError {
     let body = serde_json::from_slice::<Value>(&response.body).ok();
     let error = body
         .as_ref()
@@ -549,7 +612,7 @@ fn openai_error_response(context: &ChatAdapterContext, response: ProviderRespons
     let details = error.cloned().or(body);
 
     SigmaError::ProviderBusiness {
-        provider: context.provider.clone(),
+        provider: context.provider.to_owned(),
         status: response.status,
         code,
         message,

@@ -4,6 +4,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use bytes::Bytes;
 use futures_util::StreamExt;
 use http::{HeaderMap, HeaderValue, Method, StatusCode};
+use serde::Serialize;
+use serde::ser::{SerializeMap, Serializer};
 use serde_json::{Value, json};
 use sigma::types::chat::{
     ChatChoiceStream, ChatCompletionRequestDeveloperMessage,
@@ -14,9 +16,9 @@ use sigma::types::chat::{
 };
 use sigma::{
     ChatAdapterContext, ChatAdapterRequest, ChatCompletionAdapter, ChatParameterMap, ChatStream,
-    Client, ClientConfig, ModelDeploymentConfig, ModelRef, ParamPolicy, ProviderByteStream,
-    ProviderCatalog, ProviderDriver, ProviderEndpoint, ProviderId, ProviderInit,
-    ProviderInstanceConfig, ProviderKind, ProviderKindStatic, ProviderRegistration,
+    Client, ClientConfig, ModelDeploymentConfig, ModelName, ModelRef, ParamPolicy,
+    ProviderByteStream, ProviderCatalog, ProviderDriver, ProviderEndpoint, ProviderId,
+    ProviderInit, ProviderInstanceConfig, ProviderKind, ProviderKindStatic, ProviderRegistration,
     ProviderRequest, ProviderResponse, SigmaError, SigmaResult, SignedProviderRequest,
     StreamBehavior, submit_provider,
 };
@@ -153,6 +155,68 @@ impl FakeRequestBody {
     }
 }
 
+struct FakeChatBody<'a> {
+    params: &'a ChatParameterMap,
+    provider_model: &'a ModelName,
+    messages: &'a Value,
+    body_overrides: Option<&'a ChatParameterMap>,
+}
+
+impl Serialize for FakeChatBody<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut len = self
+            .params
+            .keys()
+            .filter(|key| {
+                !fake_generated_body_key(key.as_str())
+                    && !fake_contains_body_override(self.body_overrides, key.as_str())
+            })
+            .count();
+
+        if !fake_contains_body_override(self.body_overrides, "model") {
+            len += 1;
+        }
+        if !fake_contains_body_override(self.body_overrides, "messages") {
+            len += 1;
+        }
+        if let Some(body_overrides) = self.body_overrides {
+            len += body_overrides.len();
+        }
+
+        let mut map = serializer.serialize_map(Some(len))?;
+        for (key, value) in self.params {
+            if !fake_generated_body_key(key.as_str())
+                && !fake_contains_body_override(self.body_overrides, key.as_str())
+            {
+                map.serialize_entry(key, value)?;
+            }
+        }
+        if !fake_contains_body_override(self.body_overrides, "model") {
+            map.serialize_entry("model", self.provider_model)?;
+        }
+        if !fake_contains_body_override(self.body_overrides, "messages") {
+            map.serialize_entry("messages", self.messages)?;
+        }
+        if let Some(body_overrides) = self.body_overrides {
+            for (key, value) in body_overrides {
+                map.serialize_entry(key, value)?;
+            }
+        }
+        map.end()
+    }
+}
+
+fn fake_generated_body_key(key: &str) -> bool {
+    key == "model" || key == "messages"
+}
+
+fn fake_contains_body_override(body_overrides: Option<&ChatParameterMap>, key: &str) -> bool {
+    body_overrides.is_some_and(|body_overrides| body_overrides.contains_key(key))
+}
+
 impl ChatCompletionAdapter for FakeChatAdapter {
     fn supported_openai_params(&self) -> Vec<&'static str> {
         push_event(&self.id, "supported_openai_params");
@@ -201,7 +265,7 @@ impl ChatCompletionAdapter for FakeChatAdapter {
         Ok(())
     }
 
-    fn endpoint(&self, _request: &ChatAdapterRequest) -> SigmaResult<ProviderEndpoint> {
+    fn endpoint(&self, _request: &ChatAdapterRequest<'_>) -> SigmaResult<ProviderEndpoint> {
         push_event(&self.id, "endpoint");
         Ok(ProviderEndpoint {
             method: Method::POST,
@@ -211,14 +275,14 @@ impl ChatCompletionAdapter for FakeChatAdapter {
 
     fn transform_request(
         &self,
-        request: ChatAdapterRequest,
+        request: ChatAdapterRequest<'_>,
         endpoint: ProviderEndpoint,
     ) -> SigmaResult<ProviderRequest> {
         push_event(&self.id, "transform_request");
         if self.request_body == FakeRequestBody::RawText {
             let suffix = request
                 .body_overrides
-                .get("provider_native")
+                .and_then(|body_overrides| body_overrides.get("provider_native"))
                 .and_then(Value::as_bool)
                 .map(|enabled| format!("provider_native={enabled}"))
                 .unwrap_or_else(|| "no-overrides".to_string());
@@ -231,19 +295,15 @@ impl ChatCompletionAdapter for FakeChatAdapter {
             });
         }
 
-        let mut body = request.params;
-        body.insert(
-            "model".to_string(),
-            Value::String(request.context.provider_model.to_string()),
-        );
-        body.insert("messages".to_string(), request.messages);
-        body.extend(request.body_overrides);
-
-        let body = serde_json::to_vec(&Value::Object(body)).map_err(|err| {
-            SigmaError::ProviderTransform {
-                provider: self.id.clone(),
-                message: err.to_string(),
-            }
+        let body = serde_json::to_vec(&FakeChatBody {
+            params: &request.params,
+            provider_model: request.context.provider_model,
+            messages: &request.messages,
+            body_overrides: request.body_overrides,
+        })
+        .map_err(|err| SigmaError::ProviderTransform {
+            provider: self.id.clone(),
+            message: err.to_string(),
         })?;
 
         Ok(ProviderRequest {
@@ -266,7 +326,7 @@ impl ChatCompletionAdapter for FakeChatAdapter {
 
     fn transform_response(
         &self,
-        _context: &ChatAdapterContext,
+        _context: &ChatAdapterContext<'_>,
         response: ProviderResponse,
     ) -> SigmaResult<CreateChatCompletionResponse> {
         push_event(&self.id, "transform_response");
@@ -278,7 +338,7 @@ impl ChatCompletionAdapter for FakeChatAdapter {
 
     fn transform_error_response(
         &self,
-        _context: &ChatAdapterContext,
+        _context: &ChatAdapterContext<'_>,
         response: ProviderResponse,
     ) -> SigmaError {
         push_event(&self.id, "transform_error_response");
@@ -309,7 +369,7 @@ impl ChatCompletionAdapter for FakeChatAdapter {
 
     fn transform_stream(
         &self,
-        _context: &ChatAdapterContext,
+        _context: &ChatAdapterContext<'_>,
         stream: ProviderByteStream,
     ) -> SigmaResult<ChatStream> {
         push_event(&self.id, "transform_stream");
@@ -581,7 +641,7 @@ async fn create_routes_public_model_to_provider_model() {
 
     let response = client
         .chat()
-        .create(request(ModelRef::model("gpt-public")))
+        .create(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap();
 
@@ -601,7 +661,7 @@ async fn create_routes_deployment_id_to_provider_model() {
 
     let response = client
         .chat()
-        .create(request(ModelRef::deployment("dep-chat")))
+        .create(&request(ModelRef::deployment("dep-chat")))
         .await
         .unwrap();
 
@@ -628,7 +688,7 @@ async fn create_routes_provider_model_directly() {
 
     let response = client
         .chat()
-        .create(request(ModelRef::provider_model(
+        .create(&request(ModelRef::provider_model(
             provider_id,
             "direct-model",
         )))
@@ -636,6 +696,46 @@ async fn create_routes_provider_model_directly() {
         .unwrap();
 
     assert_eq!(response.model, "direct-model");
+}
+
+#[tokio::test]
+async fn create_accepts_borrowed_request_without_consuming_it() {
+    let server = MockServer::start().await;
+    mount_chat_response(&server, "http.execute", "ok").await;
+    let client = client(
+        "p-borrowed-create",
+        &server,
+        Value::Null,
+        ParamPolicy::RejectUnsupported,
+    );
+    let request = request(ModelRef::model("gpt-public"));
+
+    client.chat().create(&request).await.unwrap();
+
+    assert_eq!(request.model, ModelRef::model("gpt-public"));
+}
+
+#[tokio::test]
+async fn create_stream_accepts_borrowed_request_without_consuming_it() {
+    let server = MockServer::start().await;
+    mount_bytes_response(
+        &server,
+        "http.stream",
+        stream_chunk_bytes("provider-gpt", "chunk"),
+    )
+    .await;
+    let client = client(
+        "p-borrowed-stream",
+        &server,
+        Value::Null,
+        ParamPolicy::RejectUnsupported,
+    );
+    let request = request(ModelRef::model("gpt-public"));
+
+    let mut stream = client.chat().create_stream(&request).await.unwrap();
+    let _ = stream.next().await.unwrap().unwrap();
+
+    assert_eq!(request.model, ModelRef::model("gpt-public"));
 }
 
 #[tokio::test]
@@ -652,7 +752,7 @@ async fn create_runs_adapter_lifecycle_in_order() {
 
     client
         .chat()
-        .create(request(ModelRef::model("gpt-public")))
+        .create(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap();
 
@@ -686,7 +786,7 @@ async fn create_lets_adapter_transform_non_success_status_into_business_error() 
 
     let err = client
         .chat()
-        .create(request(ModelRef::model("gpt-public")))
+        .create(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap_err();
 
@@ -731,8 +831,8 @@ async fn create_rejects_unsupported_params_when_policy_rejects() {
     );
 
     let mut request = request(ModelRef::model("gpt-public"));
-    request.n = Some(2);
-    let err = client.chat().create(request).await.unwrap_err();
+    request.params.n = Some(2);
+    let err = client.chat().create(&request).await.unwrap_err();
 
     assert!(matches!(
         err,
@@ -747,8 +847,8 @@ async fn create_drops_unsupported_params_when_policy_drops() {
     let client = client("p-drop", &server, Value::Null, ParamPolicy::DropUnsupported);
 
     let mut request = request(ModelRef::model("gpt-public"));
-    request.n = Some(2);
-    client.chat().create(request).await.unwrap();
+    request.params.n = Some(2);
+    client.chat().create(&request).await.unwrap();
 
     assert!(last_body(&server).await.get("n").is_none());
 }
@@ -765,7 +865,7 @@ async fn create_applies_selected_provider_metadata_after_adapter_mapping() {
         ParamPolicy::RejectUnsupported,
     );
     let mut request = request(ModelRef::model("gpt-public"));
-    request.temperature = Some(0.2);
+    request.params.temperature = Some(0.2);
     let mut overrides = ChatParameterMap::new();
     overrides.insert("model".to_string(), json!("override-model"));
     overrides.insert("temperature".to_string(), json!(0.9));
@@ -774,7 +874,7 @@ async fn create_applies_selected_provider_metadata_after_adapter_mapping() {
         .metadata
         .insert(ProviderId::from(provider_id), overrides);
 
-    let response = client.chat().create(request).await.unwrap();
+    let response = client.chat().create(&request).await.unwrap();
 
     let body = last_body(&server).await;
     assert_eq!(response.model, "override-model");
@@ -795,7 +895,7 @@ async fn create_ignores_metadata_for_non_selected_provider() {
         ParamPolicy::RejectUnsupported,
     );
     let mut request = request(ModelRef::model("gpt-public"));
-    request.temperature = Some(0.2);
+    request.params.temperature = Some(0.2);
     let mut overrides = ChatParameterMap::new();
     overrides.insert("temperature".to_string(), json!(0.9));
     overrides.insert("provider_native".to_string(), json!(true));
@@ -803,7 +903,7 @@ async fn create_ignores_metadata_for_non_selected_provider() {
         .metadata
         .insert(ProviderId::from("other-provider"), overrides);
 
-    client.chat().create(request).await.unwrap();
+    client.chat().create(&request).await.unwrap();
 
     let body = last_body(&server).await;
     assert!((body["temperature"].as_f64().unwrap() - 0.2).abs() < 0.000001);
@@ -828,7 +928,7 @@ async fn create_does_not_reparse_serialized_provider_body_for_metadata() {
         .metadata
         .insert(ProviderId::from(provider_id), overrides);
 
-    let response = client.chat().create(request).await.unwrap();
+    let response = client.chat().create(&request).await.unwrap();
 
     assert_eq!(response.model, "raw-model");
     assert_eq!(
@@ -861,7 +961,7 @@ async fn create_lets_adapter_translate_developer_messages() {
         .build()
         .unwrap();
 
-    client.chat().create(request).await.unwrap();
+    client.chat().create(&request).await.unwrap();
 
     assert_eq!(last_body(&server).await["messages"][0]["role"], "system");
 }
@@ -889,7 +989,7 @@ async fn create_stream_metadata_can_override_injected_stream_param() {
         .metadata
         .insert(ProviderId::from(provider_id), overrides);
 
-    let mut stream = client.chat().create_stream(request).await.unwrap();
+    let mut stream = client.chat().create_stream(&request).await.unwrap();
     let _ = stream.next().await.unwrap().unwrap();
 
     assert_eq!(last_body(&server).await["stream"], json!(false));
@@ -914,7 +1014,7 @@ async fn create_stream_injects_stream_param_for_native_streams() {
 
     let mut stream = client
         .chat()
-        .create_stream(request(ModelRef::model("gpt-public")))
+        .create_stream(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap();
     let _ = stream.next().await.unwrap().unwrap();
@@ -950,7 +1050,7 @@ async fn create_stream_can_fake_stream_from_non_stream_response() {
 
     let mut stream = client
         .chat()
-        .create_stream(request(ModelRef::model("gpt-public")))
+        .create_stream(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap();
     let chunk = stream.next().await.unwrap().unwrap();
@@ -987,7 +1087,7 @@ async fn create_stream_fake_lets_adapter_transform_non_success_status_into_busin
 
     let err = match client
         .chat()
-        .create_stream(request(ModelRef::model("gpt-public")))
+        .create_stream(&request(ModelRef::model("gpt-public")))
         .await
     {
         Ok(_) => panic!("expected provider business error"),
@@ -1037,7 +1137,7 @@ async fn create_stream_uses_adapter_stream_transform_for_provider_bytes() {
 
     let mut stream = client
         .chat()
-        .create_stream(request(ModelRef::model("gpt-public")))
+        .create_stream(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap();
     let chunk = stream.next().await.unwrap().unwrap();
@@ -1062,7 +1162,7 @@ async fn create_stream_native_lets_adapter_transform_non_success_status_into_bus
 
     let err = match client
         .chat()
-        .create_stream(request(ModelRef::model("gpt-public")))
+        .create_stream(&request(ModelRef::model("gpt-public")))
         .await
     {
         Ok(_) => panic!("expected provider business error"),
