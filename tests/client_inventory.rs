@@ -248,9 +248,13 @@ fn fake_contains_body_override(body_overrides: Option<&ChatParameterMap>, key: &
 }
 
 impl ChatCompletionAdapter for FakeChatAdapter {
-    fn supported_openai_params(&self) -> Vec<&'static str> {
+    fn supported_openai_params(&self) -> Vec<String> {
         push_event(&self.id, "supported_openai_params");
-        vec!["temperature", "stream", "max_completion_tokens"]
+        vec![
+            "temperature".to_string(),
+            "stream".to_string(),
+            "max_completion_tokens".to_string(),
+        ]
     }
 
     fn translate_messages(&self, messages: &[ChatCompletionRequestMessage]) -> SigmaResult<Value> {

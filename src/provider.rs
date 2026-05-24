@@ -425,8 +425,10 @@ pub trait ChatCompletionAdapter: Send + Sync {
     /// Returns OpenAI-compatible parameter names this provider accepts.
     ///
     /// sigma uses this list with [`crate::ParamPolicy`] before calling
-    /// [`ChatCompletionAdapter::map_openai_params`].
-    fn supported_openai_params(&self) -> Vec<&'static str>;
+    /// [`ChatCompletionAdapter::map_openai_params`]. Providers may include
+    /// dynamically configured top-level field names that will be mapped or
+    /// removed later in the adapter lifecycle.
+    fn supported_openai_params(&self) -> Vec<String>;
 
     /// Translates OpenAI-compatible chat messages into provider-specific JSON.
     fn translate_messages(&self, messages: &[ChatCompletionRequestMessage]) -> SigmaResult<Value>;
