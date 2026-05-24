@@ -31,15 +31,12 @@ const OPENAI_DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 
 const SUPPORTED_OPENAI_CHAT_PARAMS: &[&str] = &[
     "audio",
-    "extra_body",
-    "extra_headers",
     "frequency_penalty",
     "function_call",
     "functions",
     "logit_bias",
     "logprobs",
     "max_completion_tokens",
-    "max_retries",
     "max_tokens",
     "metadata",
     "modalities",
