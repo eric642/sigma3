@@ -1,12 +1,10 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use bytes::Bytes;
 use futures_util::StreamExt;
 use http::{HeaderMap, HeaderValue, Method, StatusCode};
 use schemars::JsonSchema;
-use serde::ser::{SerializeMap, Serializer};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use sigma::types::chat::{
     ChatChoiceStream, ChatCompletionRequestDeveloperMessage,
@@ -63,8 +61,6 @@ struct FakeProviderConfig {
     stream_behavior: String,
     #[serde(default = "default_stream_transform")]
     stream_transform: String,
-    #[serde(default = "default_request_body")]
-    request_body: String,
 }
 
 impl Default for FakeProviderConfig {
@@ -72,7 +68,6 @@ impl Default for FakeProviderConfig {
         Self {
             stream_behavior: default_stream_behavior(),
             stream_transform: default_stream_transform(),
-            request_body: default_request_body(),
         }
     }
 }
@@ -82,10 +77,6 @@ fn default_stream_behavior() -> String {
 }
 
 fn default_stream_transform() -> String {
-    "json".to_string()
-}
-
-fn default_request_body() -> String {
     "json".to_string()
 }
 
@@ -114,7 +105,6 @@ impl FakeProvider {
                 base_url,
                 stream_behavior,
                 stream_transform: FakeStreamTransform::from_config(&config.stream_transform),
-                request_body: FakeRequestBody::from_config(&config.request_body),
             },
         }))
     }
@@ -145,7 +135,6 @@ struct FakeChatAdapter {
     base_url: String,
     stream_behavior: StreamBehavior,
     stream_transform: FakeStreamTransform,
-    request_body: FakeRequestBody,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,75 +152,6 @@ impl FakeStreamTransform {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FakeRequestBody {
-    Json,
-    RawText,
-}
-
-impl FakeRequestBody {
-    fn from_config(value: &str) -> Self {
-        match value {
-            "raw_text" => Self::RawText,
-            _ => Self::Json,
-        }
-    }
-}
-
-struct FakeChatBody<'a> {
-    params: &'a ChatParameterMap,
-    provider_model: &'a ModelName,
-    messages: &'a Value,
-    body_overrides: Option<&'a ChatParameterMap>,
-}
-
-impl Serialize for FakeChatBody<'_> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut len = self
-            .params
-            .keys()
-            .filter(|key| {
-                !fake_generated_body_key(key.as_str())
-                    && !fake_contains_body_override(self.body_overrides, key.as_str())
-            })
-            .count();
-
-        if !fake_contains_body_override(self.body_overrides, "model") {
-            len += 1;
-        }
-        if !fake_contains_body_override(self.body_overrides, "messages") {
-            len += 1;
-        }
-        if let Some(body_overrides) = self.body_overrides {
-            len += body_overrides.len();
-        }
-
-        let mut map = serializer.serialize_map(Some(len))?;
-        for (key, value) in self.params {
-            if !fake_generated_body_key(key.as_str())
-                && !fake_contains_body_override(self.body_overrides, key.as_str())
-            {
-                map.serialize_entry(key, value)?;
-            }
-        }
-        if !fake_contains_body_override(self.body_overrides, "model") {
-            map.serialize_entry("model", self.provider_model)?;
-        }
-        if !fake_contains_body_override(self.body_overrides, "messages") {
-            map.serialize_entry("messages", self.messages)?;
-        }
-        if let Some(body_overrides) = self.body_overrides {
-            for (key, value) in body_overrides {
-                map.serialize_entry(key, value)?;
-            }
-        }
-        map.end()
-    }
-}
-
 fn fake_generated_body_key(key: &str) -> bool {
     key == "model" || key == "messages"
 }
@@ -240,42 +160,75 @@ fn fake_contains_body_override(body_overrides: Option<&ChatParameterMap>, key: &
     body_overrides.is_some_and(|body_overrides| body_overrides.contains_key(key))
 }
 
+fn fake_chat_body_value(
+    provider: &ProviderId,
+    params: &ChatParameterMap,
+    provider_model: &ModelName,
+    messages: &[ChatCompletionRequestMessage],
+    body_overrides: Option<&ChatParameterMap>,
+) -> SigmaResult<Value> {
+    let mut body = serde_json::Map::new();
+    for (key, value) in params {
+        if !fake_generated_body_key(key) && !fake_contains_body_override(body_overrides, key) {
+            body.insert(key.clone(), value.clone());
+        }
+    }
+    if !fake_contains_body_override(body_overrides, "model") {
+        body.insert(
+            "model".to_string(),
+            Value::String(provider_model.to_string()),
+        );
+    }
+    if !fake_contains_body_override(body_overrides, "messages") {
+        body.insert(
+            "messages".to_string(),
+            fake_messages_to_value(provider, messages)?,
+        );
+    }
+    if let Some(body_overrides) = body_overrides {
+        body.extend(body_overrides.clone());
+    }
+
+    Ok(Value::Object(body))
+}
+
+fn fake_messages_to_value(
+    provider: &ProviderId,
+    messages: &[ChatCompletionRequestMessage],
+) -> SigmaResult<Value> {
+    let translated = messages
+        .iter()
+        .map(|message| match message {
+            ChatCompletionRequestMessage::Developer(message) => {
+                let content = match &message.content {
+                    ChatCompletionRequestDeveloperMessageContent::Text(text) => {
+                        Value::String(text.clone())
+                    }
+                    ChatCompletionRequestDeveloperMessageContent::Array(parts) => {
+                        serde_json::to_value(parts)?
+                    }
+                };
+
+                Ok(json!({
+                    "role": "system",
+                    "content": content,
+                }))
+            }
+            other => serde_json::to_value(other),
+        })
+        .collect::<Result<Vec<_>, serde_json::Error>>()
+        .map_err(|err| SigmaError::ProviderTransform {
+            provider: provider.clone(),
+            message: err.to_string(),
+        })?;
+
+    Ok(Value::Array(translated))
+}
+
 impl ChatCompletionAdapter for FakeChatAdapter {
     fn supported_openai_params(&self) -> Vec<&'static str> {
         push_event(&self.id, "supported_openai_params");
         vec!["temperature", "stream", "max_completion_tokens"]
-    }
-
-    fn translate_messages(&self, messages: &[ChatCompletionRequestMessage]) -> SigmaResult<Value> {
-        push_event(&self.id, "translate_messages");
-
-        let translated = messages
-            .iter()
-            .map(|message| match message {
-                ChatCompletionRequestMessage::Developer(message) => {
-                    let content = match &message.content {
-                        ChatCompletionRequestDeveloperMessageContent::Text(text) => {
-                            Value::String(text.clone())
-                        }
-                        ChatCompletionRequestDeveloperMessageContent::Array(parts) => {
-                            serde_json::to_value(parts)?
-                        }
-                    };
-
-                    Ok(json!({
-                        "role": "system",
-                        "content": content,
-                    }))
-                }
-                other => serde_json::to_value(other),
-            })
-            .collect::<Result<Vec<_>, serde_json::Error>>()
-            .map_err(|err| SigmaError::ProviderTransform {
-                provider: self.id.clone(),
-                message: err.to_string(),
-            })?;
-
-        Ok(Value::Array(translated))
     }
 
     fn map_openai_params(&self, params: ChatParameterMap) -> SigmaResult<ChatParameterMap> {
@@ -302,38 +255,20 @@ impl ChatCompletionAdapter for FakeChatAdapter {
         endpoint: ProviderEndpoint,
     ) -> SigmaResult<ProviderRequest> {
         push_event(&self.id, "transform_request");
-        if self.request_body == FakeRequestBody::RawText {
-            let suffix = request
-                .body_overrides
-                .and_then(|body_overrides| body_overrides.get("provider_native"))
-                .and_then(Value::as_bool)
-                .map(|enabled| format!("provider_native={enabled}"))
-                .unwrap_or_else(|| "no-overrides".to_string());
-
-            return Ok(ProviderRequest {
-                method: endpoint.method,
-                url: endpoint.url,
-                headers: HeaderMap::new(),
-                body: Bytes::from(format!("raw-body:{suffix}")),
-            });
-        }
-
-        let body = serde_json::to_vec(&FakeChatBody {
-            params: &request.params,
-            provider_model: request.context.provider_model,
-            messages: &request.messages,
-            body_overrides: request.body_overrides,
-        })
-        .map_err(|err| SigmaError::ProviderTransform {
-            provider: self.id.clone(),
-            message: err.to_string(),
-        })?;
+        let body = fake_chat_body_value(
+            &self.id,
+            &request.params,
+            request.context.provider_model,
+            request.messages,
+            request.body_overrides,
+        )?;
 
         Ok(ProviderRequest {
             method: endpoint.method,
             url: endpoint.url,
             headers: HeaderMap::new(),
-            body: Bytes::from(body),
+            body,
+            provider_state: None,
         })
     }
 
@@ -459,23 +394,6 @@ async fn mount_chat_response(server: &MockServer, event: &'static str, content: 
         .await;
 }
 
-async fn mount_static_chat_response(
-    server: &MockServer,
-    event: &'static str,
-    model: &'static str,
-    content: &'static str,
-) {
-    Mock::given(method("POST"))
-        .and(path("/chat"))
-        .respond_with(move |request: &WiremockRequest| {
-            let provider = provider_from_request(request);
-            push_event(&provider, event);
-            ResponseTemplate::new(200).set_body_json(response_body(model, content))
-        })
-        .mount(server)
-        .await;
-}
-
 async fn mount_bytes_response(server: &MockServer, event: &'static str, body: Vec<u8>) {
     Mock::given(method("POST"))
         .and(path("/chat"))
@@ -504,11 +422,6 @@ async fn mount_error_response(server: &MockServer, event: &'static str) {
 async fn last_body(server: &MockServer) -> Value {
     let requests = server.received_requests().await.unwrap();
     requests.last().unwrap().body_json().unwrap()
-}
-
-async fn last_raw_body(server: &MockServer) -> Vec<u8> {
-    let requests = server.received_requests().await.unwrap();
-    requests.last().unwrap().body.clone()
 }
 
 async fn request_count(server: &MockServer) -> usize {
@@ -555,6 +468,9 @@ fn stream_chunk(id: &str, model: &str, content: &str) -> CreateChatCompletionStr
                 tool_calls: None,
                 role: None,
                 refusal: None,
+                thinking_blocks: None,
+                reasoning_content: None,
+                provider_specific_fields: None,
             },
             finish_reason: None,
             logprobs: None,
@@ -869,6 +785,21 @@ fn catalog_from_registrations_rejects_duplicate_kind() {
     ));
 }
 
+#[test]
+fn provider_request_body_is_structured_json() {
+    let request = ProviderRequest {
+        method: Method::POST,
+        url: "http://localhost/chat".to_string(),
+        headers: HeaderMap::new(),
+        body: json!({"provider_native": true}),
+        provider_state: None,
+    };
+
+    let signed = SignedProviderRequest::from(request);
+
+    assert_eq!(signed.body["provider_native"], true);
+}
+
 #[tokio::test]
 async fn create_routes_public_model_to_provider_model() {
     let server = MockServer::start().await;
@@ -1001,7 +932,6 @@ async fn create_runs_adapter_lifecycle_in_order() {
         take_events(provider_id),
         vec![
             "supported_openai_params",
-            "translate_messages",
             "map_openai_params",
             "validate_environment",
             "endpoint",
@@ -1049,7 +979,6 @@ async fn create_lets_adapter_transform_non_success_status_into_business_error() 
         take_events(provider_id),
         vec![
             "supported_openai_params",
-            "translate_messages",
             "map_openai_params",
             "validate_environment",
             "endpoint",
@@ -1335,14 +1264,14 @@ async fn create_ignores_metadata_for_non_selected_provider() {
 }
 
 #[tokio::test]
-async fn create_does_not_reparse_serialized_provider_body_for_metadata() {
+async fn create_keeps_provider_body_structured_for_metadata() {
     let server = MockServer::start().await;
-    let provider_id = "p-raw-body";
-    mount_static_chat_response(&server, "http.execute", "raw-model", "ok").await;
+    let provider_id = "p-structured-body";
+    mount_chat_response(&server, "http.execute", "ok").await;
     let client = client(
         provider_id,
         &server,
-        json!({"request_body": "raw_text"}),
+        Value::Null,
         ParamPolicy::RejectUnsupported,
     );
     let mut request = request(ModelRef::model("gpt-public"));
@@ -1354,15 +1283,13 @@ async fn create_does_not_reparse_serialized_provider_body_for_metadata() {
 
     let response = client.chat().create(&request).await.unwrap();
 
-    assert_eq!(response.model, "raw-model");
-    assert_eq!(
-        last_raw_body(&server).await,
-        b"raw-body:provider_native=true"
-    );
+    let body = last_body(&server).await;
+    assert_eq!(response.model, "provider-gpt");
+    assert_eq!(body["provider_native"], true);
 }
 
 #[tokio::test]
-async fn create_lets_adapter_translate_developer_messages() {
+async fn create_lets_adapter_transform_developer_messages_in_request_body() {
     let server = MockServer::start().await;
     mount_chat_response(&server, "http.execute", "ok").await;
     let client = client(
@@ -1448,7 +1375,6 @@ async fn create_stream_injects_stream_param_for_native_streams() {
         take_events(provider_id),
         vec![
             "supported_openai_params",
-            "translate_messages",
             "map_openai_params",
             "validate_environment",
             "endpoint",
@@ -1485,7 +1411,6 @@ async fn create_stream_can_fake_stream_from_non_stream_response() {
         take_events(provider_id),
         vec![
             "supported_openai_params",
-            "translate_messages",
             "map_openai_params",
             "validate_environment",
             "endpoint",
@@ -1536,7 +1461,6 @@ async fn create_stream_fake_lets_adapter_transform_non_success_status_into_busin
         take_events(provider_id),
         vec![
             "supported_openai_params",
-            "translate_messages",
             "map_openai_params",
             "validate_environment",
             "endpoint",
@@ -1611,7 +1535,6 @@ async fn create_stream_native_lets_adapter_transform_non_success_status_into_bus
         take_events(provider_id),
         vec![
             "supported_openai_params",
-            "translate_messages",
             "map_openai_params",
             "validate_environment",
             "endpoint",

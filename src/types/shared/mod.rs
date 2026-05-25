@@ -1,5 +1,6 @@
 //! Types shared across multiple sigma submodules.
 
+mod anthropic;
 mod completion_tokens_details;
 mod custom_grammar_format_param;
 mod function_call;
@@ -11,6 +12,7 @@ mod prompt_tokens_details;
 mod reasoning_effort;
 mod response_format;
 
+pub use anthropic::*;
 pub use completion_tokens_details::*;
 pub use custom_grammar_format_param::*;
 pub use function_call::*;

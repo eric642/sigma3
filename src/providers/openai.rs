@@ -168,7 +168,7 @@ struct OpenAiChatAdapter {
 struct OpenAiChatBody<'a> {
     params: &'a ChatParameterMap,
     provider_model: &'a ModelName,
-    messages: &'a Value,
+    messages: &'a [ChatCompletionRequestMessage],
     body_overrides: Option<&'a ChatParameterMap>,
 }
 
@@ -232,13 +232,6 @@ impl ChatCompletionAdapter for OpenAiChatAdapter {
         SUPPORTED_OPENAI_CHAT_PARAMS.to_vec()
     }
 
-    fn translate_messages(&self, messages: &[ChatCompletionRequestMessage]) -> SigmaResult<Value> {
-        serde_json::to_value(messages).map_err(|err| SigmaError::ProviderTransform {
-            provider: self.provider.clone(),
-            message: err.to_string(),
-        })
-    }
-
     fn map_openai_params(&self, params: ChatParameterMap) -> SigmaResult<ChatParameterMap> {
         Ok(params)
     }
@@ -259,10 +252,10 @@ impl ChatCompletionAdapter for OpenAiChatAdapter {
         request: ChatAdapterRequest<'_>,
         endpoint: ProviderEndpoint,
     ) -> SigmaResult<ProviderRequest> {
-        let body = serde_json::to_vec(&OpenAiChatBody {
+        let body = serde_json::to_value(&OpenAiChatBody {
             params: &request.params,
             provider_model: request.context.provider_model,
-            messages: &request.messages,
+            messages: request.messages,
             body_overrides: request.body_overrides,
         })
         .map_err(|err| SigmaError::ProviderTransform {
@@ -279,7 +272,8 @@ impl ChatCompletionAdapter for OpenAiChatAdapter {
             method: endpoint.method,
             url: endpoint.url,
             headers,
-            body: Bytes::from(body),
+            body,
+            provider_state: None,
         })
     }
 

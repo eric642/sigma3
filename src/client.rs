@@ -341,7 +341,7 @@ impl Client {
             .http_client
             .request(request.method, request.url)
             .headers(request.headers)
-            .body(request.body)
+            .body(request.body.to_string())
     }
 
     fn prepare_provider_request<'a>(
@@ -364,14 +364,13 @@ impl Client {
         let rules =
             self.resolve_chat_param_rules(context.provider, context.provider_model, adapter);
         let params = self.apply_chat_param_rules(context.provider, params, &rules)?;
-        let messages = adapter.translate_messages(&request.messages)?;
         let params = adapter.map_openai_params(params)?;
         adapter.validate_environment()?;
 
         let body_overrides = request.metadata.get(context.provider);
         let adapter_request = ChatAdapterRequest {
-            context,
-            messages,
+            context: context.clone(),
+            messages: &request.messages,
             params,
             body_overrides,
         };
@@ -379,6 +378,10 @@ impl Client {
         let endpoint = adapter.endpoint(&adapter_request)?;
         let provider_request = adapter.transform_request(adapter_request, endpoint)?;
         let signed_request = adapter.sign_request(provider_request)?;
+        let context = ChatAdapterContext {
+            provider_state: signed_request.provider_state.clone(),
+            ..context
+        };
 
         Ok((signed_request, adapter, context))
     }
@@ -706,6 +709,7 @@ impl ResolvedRoute {
             public_model: &self.public_model,
             provider_model: &self.provider_model,
             model_info: deployment_model_info(self.deployment.as_ref()),
+            provider_state: None,
         }
     }
 

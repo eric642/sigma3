@@ -87,8 +87,8 @@ pub enum ParamPolicy {
 /// Provider-level chat parameter handling rules.
 ///
 /// These rules are applied by sigma after deployment defaults and request
-/// parameters are merged, but before provider message translation and request
-/// transformation. They let one configured provider instance describe which
+/// parameters are merged, but before provider request transformation. They let
+/// one configured provider instance describe which
 /// OpenAI-compatible parameters it accepts, which extra parameters are allowed,
 /// which parameters should be removed, and which top-level fields should be
 /// renamed before reaching the provider adapter.

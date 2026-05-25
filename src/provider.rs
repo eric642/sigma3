@@ -468,7 +468,7 @@ pub trait CustomChatProvider: Send + Sync {
 /// single routed chat request. Adapters receive it again when transforming
 /// regular responses or provider byte streams so parsing can depend on the same
 /// routing state used to build the request.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ChatAdapterContext<'a> {
     /// Provider instance selected for the request.
     pub provider: &'a ProviderId,
@@ -480,21 +480,30 @@ pub struct ChatAdapterContext<'a> {
     pub provider_model: &'a ModelName,
     /// Opaque model metadata from the selected deployment, when routing used one.
     pub model_info: Option<&'a Value>,
+    /// Request-scoped provider state created while transforming the outbound
+    /// request.
+    ///
+    /// This is never serialized. Adapters can use it when a response transform
+    /// needs data derived from the request, such as Anthropic tool-name maps.
+    pub provider_state: Option<Value>,
 }
 
 /// Provider-neutral request data passed through the chat adapter lifecycle.
 ///
-/// The adapter receives translated messages, merged parameters, and routing
+/// The adapter receives original messages, merged parameters, and routing
 /// context. It then chooses an endpoint, applies provider-scoped body overrides
-/// while the body is still structured data, serializes a provider request,
-/// signs it, and later transforms the response or stream using the same
-/// context.
+/// while constructing a structured JSON provider request, signs it, and later
+/// transforms the response or stream using the same context.
 #[derive(Debug, Clone)]
 pub struct ChatAdapterRequest<'a> {
     /// Routing metadata for this adapter call.
     pub context: ChatAdapterContext<'a>,
-    /// Provider-specific representation of request messages.
-    pub messages: Value,
+    /// Original OpenAI-compatible chat messages.
+    ///
+    /// Adapters convert these messages into provider-native JSON inside
+    /// [`ChatCompletionAdapter::transform_request`], alongside parameter
+    /// mapping and request-body override handling.
+    pub messages: &'a [ChatCompletionRequestMessage],
     /// Merged and policy-filtered chat parameters.
     pub params: ChatParameterMap,
     /// Provider-scoped final request body overrides for the selected provider.
@@ -559,16 +568,15 @@ impl Default for StreamBehavior {
 /// The lifecycle for `create` is:
 ///
 /// 1. [`ChatCompletionAdapter::supported_openai_params`]
-/// 2. [`ChatCompletionAdapter::translate_messages`]
-/// 3. [`ChatCompletionAdapter::map_openai_params`]
-/// 4. [`ChatCompletionAdapter::validate_environment`]
-/// 5. [`ChatCompletionAdapter::endpoint`]
-/// 6. [`ChatCompletionAdapter::transform_request`]
-/// 7. [`ChatCompletionAdapter::sign_request`]
-/// 8. sigma sends the signed request with its shared [`reqwest::Client`]
-/// 9. non-success HTTP statuses use
+/// 2. [`ChatCompletionAdapter::map_openai_params`]
+/// 3. [`ChatCompletionAdapter::validate_environment`]
+/// 4. [`ChatCompletionAdapter::endpoint`]
+/// 5. [`ChatCompletionAdapter::transform_request`]
+/// 6. [`ChatCompletionAdapter::sign_request`]
+/// 7. sigma sends the signed request with its shared [`reqwest::Client`]
+/// 8. non-success HTTP statuses use
 ///    [`ChatCompletionAdapter::transform_error_response`]
-/// 10. success responses use [`ChatCompletionAdapter::transform_response`]
+/// 9. success responses use [`ChatCompletionAdapter::transform_response`]
 ///
 /// `create_stream` follows the same preparation path. Native streams use
 /// [`ChatCompletionAdapter::transform_error_response`] for non-success HTTP
@@ -583,9 +591,6 @@ pub trait ChatCompletionAdapter: Send + Sync {
     /// before calling [`ChatCompletionAdapter::map_openai_params`].
     fn supported_openai_params(&self) -> Vec<&'static str>;
 
-    /// Translates OpenAI-compatible chat messages into provider-specific JSON.
-    fn translate_messages(&self, messages: &[ChatCompletionRequestMessage]) -> SigmaResult<Value>;
-
     /// Maps OpenAI-compatible parameters to provider-specific parameters.
     fn map_openai_params(&self, params: ChatParameterMap) -> SigmaResult<ChatParameterMap>;
 
@@ -595,7 +600,7 @@ pub trait ChatCompletionAdapter: Send + Sync {
     /// Selects the provider endpoint for a prepared chat request.
     fn endpoint(&self, request: &ChatAdapterRequest<'_>) -> SigmaResult<ProviderEndpoint>;
 
-    /// Serializes a prepared chat request into a provider HTTP request.
+    /// Builds a structured provider HTTP request from prepared chat inputs.
     fn transform_request(
         &self,
         request: ChatAdapterRequest<'_>,
@@ -681,6 +686,9 @@ pub(crate) fn response_to_stream_chunk(
                 tool_calls: None,
                 role: Some(choice.message.role),
                 refusal: choice.message.refusal,
+                thinking_blocks: choice.message.thinking_blocks,
+                reasoning_content: choice.message.reasoning_content,
+                provider_specific_fields: choice.message.provider_specific_fields,
             },
             finish_reason: choice.finish_reason,
             logprobs: choice.logprobs,

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::config::{ChatParameterMap, ProviderMetadataMap};
 use crate::error::SigmaError;
@@ -12,7 +13,9 @@ use crate::types::chat::options::{
     ResponseModalities, ServiceTier, Verbosity, WebSearchOptions,
 };
 use crate::types::chat::tools::{ChatCompletionToolChoiceOption, ChatCompletionTools};
-use crate::types::shared::{ReasoningEffort, ResponseFormat};
+use crate::types::shared::{
+    AnthropicOutputConfig, AnthropicThinkingParam, ReasoningEffort, ResponseFormat,
+};
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(untagged)]
@@ -91,6 +94,13 @@ pub struct CreateChatCompletionRequestParams {
     /// Reasoning effort requested for reasoning-capable models.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Maximum number of output tokens the provider may generate.
+    ///
+    /// Anthropic's Messages API requires `max_tokens`. OpenAI-compatible
+    /// callers may use either this field or [`CreateChatCompletionRequestParams::max_completion_tokens`];
+    /// the Anthropic provider maps both to native `max_tokens`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
     /// Maximum number of completion tokens the model may generate.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_completion_tokens: Option<u32>,
@@ -145,6 +155,9 @@ pub struct CreateChatCompletionRequestParams {
     /// Nucleus sampling probability.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f32>,
+    /// Anthropic top-k sampling parameter.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_k: Option<u32>,
     /// Tools the model may call.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ChatCompletionTools>>,
@@ -163,6 +176,47 @@ pub struct CreateChatCompletionRequestParams {
     /// Prompt cache retention policy.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_cache_retention: Option<PromptCacheRetention>,
+    /// Native Anthropic thinking controls.
+    ///
+    /// Use this for provider-specific control. For portable reasoning hints,
+    /// prefer [`CreateChatCompletionRequestParams::reasoning_effort`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<AnthropicThinkingParam>,
+    /// Anthropic context-management configuration.
+    ///
+    /// This is intentionally JSON-shaped because Anthropic beta schemas change
+    /// faster than sigma's stable public types. The Anthropic provider sends
+    /// this field as-is after applying LiteLLM-compatible beta headers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_management: Option<Value>,
+    /// Anthropic MCP server definitions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp_servers: Option<Vec<Value>>,
+    /// Anthropic container configuration for hosted tools and skills.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container: Option<Value>,
+    /// Native Anthropic structured output schema.
+    ///
+    /// Callers that want portable JSON mode should usually use
+    /// [`CreateChatCompletionRequestParams::response_format`]. This field is
+    /// sent directly as Anthropic `output_format`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_format: Option<Value>,
+    /// Anthropic output behavior configuration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_config: Option<AnthropicOutputConfig>,
+    /// Anthropic cache-control request object.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<Value>,
+    /// Anthropic fast-mode selector.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speed: Option<String>,
+    /// Additional Anthropic beta header values for this request.
+    ///
+    /// The Anthropic provider merges these with automatically inferred beta
+    /// values and configured static beta headers before sending the request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anthropic_beta: Option<Vec<String>>,
 }
 
 impl CreateChatCompletionRequest {
