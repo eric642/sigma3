@@ -41,6 +41,7 @@ fn response_message_minimal() {
         annotations: None,
         role: Role::Assistant,
         audio: None,
+        thinking_blocks: None,
         provider_specific_fields: None,
     };
     let s = serde_json::to_string(&m).unwrap();

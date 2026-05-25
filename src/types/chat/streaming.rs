@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::types::chat::messages::Role;
 use crate::types::chat::options::ServiceTier;
 use crate::types::chat::response::{ChatChoiceLogprobs, CompletionUsage, FinishReason};
+use crate::types::shared::AnthropicThinkingBlock;
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct FunctionCallStream {
@@ -45,6 +46,9 @@ pub struct ChatCompletionStreamResponseDelta {
     pub tool_calls: Option<Vec<ChatCompletionMessageToolCallChunk>>,
     pub role: Option<Role>,
     pub refusal: Option<String>,
+    /// Anthropic thinking delta blocks returned by Claude streams.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_blocks: Option<Vec<AnthropicThinkingBlock>>,
     /// Provider-native metadata for the streamed assistant delta.
     ///
     /// The JSON shape is provider-specific and should be round-tripped only

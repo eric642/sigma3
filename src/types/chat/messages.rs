@@ -8,6 +8,7 @@ use crate::types::chat::content::{
     ChatCompletionRequestMessageContentPartText,
 };
 use crate::types::chat::tools::ChatCompletionMessageToolCalls;
+use crate::types::shared::AnthropicThinkingBlock;
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, Default, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -171,6 +172,16 @@ pub struct ChatCompletionRequestAssistantMessage {
     pub audio: Option<ChatCompletionRequestAssistantMessageAudio>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ChatCompletionMessageToolCalls>>,
+    /// Anthropic thinking blocks from a previous Claude response.
+    ///
+    /// Preserve these when replaying Anthropic conversation history so Claude
+    /// can verify thinking signatures on later turns.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_blocks: Option<Vec<AnthropicThinkingBlock>>,
+    /// Provider-native fields needed to replay Anthropic server tool and
+    /// context-management content.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_specific_fields: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone, Builder, PartialEq)]

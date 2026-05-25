@@ -17,6 +17,7 @@ fn delta_round_trip() {
         tool_calls: None,
         role: Some(Role::Assistant),
         refusal: None,
+        thinking_blocks: None,
         provider_specific_fields: None,
     };
     let s = serde_json::to_string(&d).unwrap();
@@ -59,6 +60,7 @@ fn choice_stream_minimal() {
             tool_calls: None,
             role: None,
             refusal: None,
+            thinking_blocks: None,
             provider_specific_fields: None,
         },
         finish_reason: None,

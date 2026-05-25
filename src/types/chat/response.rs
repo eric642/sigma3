@@ -9,7 +9,9 @@ use crate::types::chat::content::{
 use crate::types::chat::messages::Role;
 use crate::types::chat::options::ServiceTier;
 use crate::types::chat::tools::ChatCompletionMessageToolCalls;
-use crate::types::shared::{CompletionTokensDetails, PromptTokensDetails};
+use crate::types::shared::{
+    AnthropicServerToolUse, AnthropicThinkingBlock, CompletionTokensDetails, PromptTokensDetails,
+};
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Logprobs {
@@ -43,6 +45,21 @@ pub struct CompletionUsage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,
+    /// Anthropic cache creation input tokens, when returned by the provider.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_creation_input_tokens: Option<u32>,
+    /// Anthropic cache read input tokens, when returned by the provider.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_read_input_tokens: Option<u32>,
+    /// Anthropic hosted server tool usage counts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_tool_use: Option<AnthropicServerToolUse>,
+    /// Anthropic inference geography, when returned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inference_geo: Option<String>,
+    /// Anthropic speed mode, when returned or inferred from the request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speed: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_tokens_details: Option<PromptTokensDetails>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -96,6 +113,12 @@ pub struct ChatCompletionResponseMessage {
     pub role: Role,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audio: Option<ChatCompletionResponseMessageAudio>,
+    /// Anthropic thinking blocks returned with this assistant message.
+    ///
+    /// These blocks are not merged into `content` so applications can replay
+    /// Claude conversation history with native thinking signatures intact.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_blocks: Option<Vec<AnthropicThinkingBlock>>,
     /// Provider-native metadata needed to preserve advanced provider context.
     ///
     /// Gemini uses this for thought signatures and server-side tool invocation

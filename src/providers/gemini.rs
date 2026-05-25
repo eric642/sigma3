@@ -168,13 +168,6 @@ impl ChatCompletionAdapter for GeminiChatAdapter {
         SUPPORTED_GEMINI_CHAT_PARAMS.to_vec()
     }
 
-    fn translate_messages(&self, messages: &[ChatCompletionRequestMessage]) -> SigmaResult<Value> {
-        serde_json::to_value(messages).map_err(|err| SigmaError::ProviderTransform {
-            provider: self.provider.clone(),
-            message: err.to_string(),
-        })
-    }
-
     fn map_openai_params(&self, params: ChatParameterMap) -> SigmaResult<ChatParameterMap> {
         Ok(params)
     }
@@ -215,26 +208,18 @@ impl ChatCompletionAdapter for GeminiChatAdapter {
         request: ChatAdapterRequest<'_>,
         endpoint: ProviderEndpoint,
     ) -> SigmaResult<ProviderRequest> {
-        let messages =
-            serde_json::from_value::<Vec<ChatCompletionRequestMessage>>(request.messages.clone())
-                .map_err(|err| SigmaError::ProviderTransform {
-                provider: self.provider.clone(),
-                message: err.to_string(),
-            })?;
-        let mut body =
-            gemini_request_body(&self.provider, request.context, &messages, &request.params)?;
+        let mut body = gemini_request_body(
+            &self.provider,
+            request.context,
+            request.messages,
+            &request.params,
+        )?;
         if let Some(body_overrides) = request.body_overrides {
             for (key, value) in body_overrides {
                 body.insert(key.clone(), value.clone());
             }
         }
 
-        let bytes = serde_json::to_vec(&Value::Object(body)).map_err(|err| {
-            SigmaError::ProviderTransform {
-                provider: self.provider.clone(),
-                message: err.to_string(),
-            }
-        })?;
         let mut headers = self.headers.clone();
         if !headers.contains_key(CONTENT_TYPE) {
             headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
@@ -244,7 +229,8 @@ impl ChatCompletionAdapter for GeminiChatAdapter {
             method: endpoint.method,
             url: endpoint.url,
             headers,
-            body: Bytes::from(bytes),
+            body: Value::Object(body),
+            provider_state: None,
         })
     }
 
@@ -939,6 +925,7 @@ fn reasoning_budget_config(model: &str, effort: ReasoningEffort) -> Value {
         ReasoningEffort::Medium => (2048, true),
         ReasoningEffort::High => (4096, true),
         ReasoningEffort::Xhigh => (8192, true),
+        ReasoningEffort::Max => (16384, true),
     };
     json!({ "thinkingBudget": budget, "includeThoughts": include_thoughts })
 }
@@ -954,7 +941,10 @@ fn reasoning_level_config(model: &str, effort: ReasoningEffort) -> Value {
         ReasoningEffort::Medium if is_flash || model.contains("gemini-3.1-pro-preview") => {
             ("medium", true)
         }
-        ReasoningEffort::Medium | ReasoningEffort::High | ReasoningEffort::Xhigh => ("high", true),
+        ReasoningEffort::Medium
+        | ReasoningEffort::High
+        | ReasoningEffort::Xhigh
+        | ReasoningEffort::Max => ("high", true),
     };
     json!({ "thinkingLevel": level, "includeThoughts": include_thoughts })
 }
@@ -1025,6 +1015,7 @@ fn gemini_choices(body: &Value, stream_delta: bool) -> SigmaResult<Vec<ChatChoic
                 annotations: None,
                 role: Role::Assistant,
                 audio: None,
+                thinking_blocks: None,
                 provider_specific_fields: None,
             },
             finish_reason: Some(FinishReason::ContentFilter),
@@ -1124,6 +1115,7 @@ fn gemini_candidate_choice(
             annotations,
             role: Role::Assistant,
             audio: None,
+            thinking_blocks: None,
             provider_specific_fields,
         },
         finish_reason,
@@ -1334,6 +1326,7 @@ fn stream_choice_from_candidate(candidate: &Value, idx: usize) -> SigmaResult<Ch
             tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
             role: parts.map(|_| Role::Assistant),
             refusal: None,
+            thinking_blocks: None,
             provider_specific_fields,
         },
         finish_reason: candidate
@@ -1358,6 +1351,11 @@ fn gemini_usage(value: &Value) -> CompletionUsage {
         prompt_tokens,
         completion_tokens,
         total_tokens,
+        cache_creation_input_tokens: None,
+        cache_read_input_tokens: cached_tokens,
+        server_tool_use: None,
+        inference_geo: None,
+        speed: None,
         prompt_tokens_details: Some(PromptTokensDetails {
             audio_tokens: prompt_details.audio,
             cached_tokens,
