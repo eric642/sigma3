@@ -61,6 +61,9 @@ fn file_object_skips_none() {
         file_id: Some("file_123".into()),
         file_data: None,
         filename: None,
+        format: None,
+        detail: None,
+        video_metadata: None,
     };
     let s = serde_json::to_string(&f).unwrap();
     assert_eq!(s, r#"{"file_id":"file_123"}"#);
@@ -73,6 +76,9 @@ fn file_part_round_trip() {
             file_id: Some("file_123".into()),
             file_data: None,
             filename: None,
+            format: None,
+            detail: None,
+            video_metadata: None,
         },
     };
     let s = serde_json::to_string(&p).unwrap();

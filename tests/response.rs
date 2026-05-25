@@ -35,11 +35,13 @@ fn url_citation_round_trip() {
 fn response_message_minimal() {
     let m = ChatCompletionResponseMessage {
         content: Some("hi".into()),
+        reasoning_content: None,
         refusal: None,
         tool_calls: None,
         annotations: None,
         role: Role::Assistant,
         audio: None,
+        provider_specific_fields: None,
     };
     let s = serde_json::to_string(&m).unwrap();
     assert_eq!(s, r#"{"content":"hi","role":"assistant"}"#);

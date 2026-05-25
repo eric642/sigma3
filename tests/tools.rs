@@ -59,6 +59,7 @@ fn message_tool_calls_function() {
             name: "f".into(),
             arguments: "{}".into(),
         },
+        provider_specific_fields: None,
     });
     let s = serde_json::to_string(&v).unwrap();
     assert_eq!(
@@ -75,6 +76,7 @@ fn message_tool_calls_custom() {
             name: "c".into(),
             input: "x".into(),
         },
+        provider_specific_fields: None,
     });
     let s = serde_json::to_string(&v).unwrap();
     let back: ChatCompletionMessageToolCalls = serde_json::from_str(&s).unwrap();

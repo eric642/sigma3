@@ -678,9 +678,11 @@ pub(crate) fn response_to_stream_chunk(
             index: choice.index,
             delta: ChatCompletionStreamResponseDelta {
                 content: choice.message.content,
+                reasoning_content: choice.message.reasoning_content,
                 tool_calls: None,
                 role: Some(choice.message.role),
                 refusal: choice.message.refusal,
+                provider_specific_fields: choice.message.provider_specific_fields,
             },
             finish_reason: choice.finish_reason,
             logprobs: choice.logprobs,

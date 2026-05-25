@@ -9,6 +9,9 @@ fn completion_tokens_details_round_trip() {
     let v = CompletionTokensDetails {
         accepted_prediction_tokens: Some(1),
         audio_tokens: Some(2),
+        text_tokens: None,
+        image_tokens: None,
+        video_tokens: None,
         reasoning_tokens: Some(3),
         rejected_prediction_tokens: Some(4),
     };

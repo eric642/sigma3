@@ -2,7 +2,7 @@ use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
 
 use crate::error::SigmaError;
-use crate::types::shared::ImageUrl;
+use crate::types::shared::{ImageDetail, ImageUrl};
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone, Builder, PartialEq)]
 #[builder(name = "ChatCompletionRequestMessageContentPartTextArgs")]
@@ -70,6 +70,27 @@ pub struct FileObject {
     /// string.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filename: Option<String>,
+    /// Optional MIME type used by providers that need explicit media typing.
+    ///
+    /// Gemini uses this to build `inlineData` or `fileData` parts. When this is
+    /// omitted for inline base64 data, sigma attempts to infer the MIME type
+    /// from a data URI and otherwise returns a provider transform error.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    /// Optional provider media resolution hint for document, image, or video
+    /// inputs.
+    ///
+    /// Gemini maps this to `mediaResolution` on a part or generation config
+    /// depending on model capability.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<ImageDetail>,
+    /// Optional Gemini video metadata for file inputs.
+    ///
+    /// Values are forwarded as provider-native JSON after converting common
+    /// snake_case keys such as `start_offset` and `end_offset` to Gemini's
+    /// camelCase field names.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub video_metadata: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]

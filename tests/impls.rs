@@ -125,6 +125,7 @@ fn tool_call_into_message_tool_calls() {
             name: "f".into(),
             arguments: "{}".into(),
         },
+        provider_specific_fields: None,
     };
     let _: ChatCompletionMessageToolCalls = t.into();
 }

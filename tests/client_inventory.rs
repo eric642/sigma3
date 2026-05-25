@@ -552,9 +552,11 @@ fn stream_chunk(id: &str, model: &str, content: &str) -> CreateChatCompletionStr
             index: 0,
             delta: ChatCompletionStreamResponseDelta {
                 content: Some(content.to_string()),
+                reasoning_content: None,
                 tool_calls: None,
                 role: None,
                 refusal: None,
+                provider_specific_fields: None,
             },
             finish_reason: None,
             logprobs: None,

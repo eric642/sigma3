@@ -13,9 +13,11 @@ fn function_type_is_lowercase() {
 fn delta_round_trip() {
     let d = ChatCompletionStreamResponseDelta {
         content: Some("hi".into()),
+        reasoning_content: None,
         tool_calls: None,
         role: Some(Role::Assistant),
         refusal: None,
+        provider_specific_fields: None,
     };
     let s = serde_json::to_string(&d).unwrap();
     let back: ChatCompletionStreamResponseDelta = serde_json::from_str(&s).unwrap();
@@ -32,6 +34,7 @@ fn tool_call_chunk_round_trip() {
             name: Some("f".into()),
             arguments: Some("{}".into()),
         }),
+        provider_specific_fields: None,
     };
     let s = serde_json::to_string(&c).unwrap();
     let back: ChatCompletionMessageToolCallChunk = serde_json::from_str(&s).unwrap();
@@ -52,9 +55,11 @@ fn choice_stream_minimal() {
         index: 0,
         delta: ChatCompletionStreamResponseDelta {
             content: Some("a".into()),
+            reasoning_content: None,
             tool_calls: None,
             role: None,
             refusal: None,
+            provider_specific_fields: None,
         },
         finish_reason: None,
         logprobs: None,

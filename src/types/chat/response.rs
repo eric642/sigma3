@@ -80,6 +80,13 @@ pub struct ChatCompletionResponseMessageAudio {
 pub struct ChatCompletionResponseMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    /// Provider reasoning text returned separately from final assistant
+    /// content.
+    ///
+    /// Gemini thinking parts are exposed here so callers can inspect reasoning
+    /// content without mixing it into the assistant's final answer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refusal: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -89,6 +96,12 @@ pub struct ChatCompletionResponseMessage {
     pub role: Role,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audio: Option<ChatCompletionResponseMessageAudio>,
+    /// Provider-native metadata needed to preserve advanced provider context.
+    ///
+    /// Gemini uses this for thought signatures and server-side tool invocation
+    /// context. Applications should treat the JSON shape as provider-specific.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_specific_fields: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]

@@ -15,6 +15,13 @@ pub struct ChatCompletionMessageToolCall {
     pub id: String,
     /// The function that the model called.
     pub function: FunctionCall,
+    /// Provider-native metadata needed to preserve multi-turn tool context.
+    ///
+    /// Gemini uses this for thought signatures that must be sent back on later
+    /// tool-call turns. Applications can inspect the value but should treat its
+    /// shape as provider-specific.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_specific_fields: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
@@ -23,6 +30,12 @@ pub struct ChatCompletionMessageCustomToolCall {
     pub id: String,
     /// The custom tool that the model called.
     pub custom_tool: CustomTool,
+    /// Provider-native metadata needed to preserve multi-turn tool context.
+    ///
+    /// Providers may use this to attach opaque data that must round-trip with
+    /// the tool call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_specific_fields: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
