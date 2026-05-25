@@ -174,11 +174,11 @@ fn catalog_from_inventory_exposes_openai_provider_config_schemas() {
         openai.schema["properties"]["config"]["additionalProperties"],
         false
     );
-    let compatible_config_properties = compatible.schema["properties"]["config"]["properties"]
-        .as_object()
-        .unwrap();
-    assert!(compatible_config_properties.contains_key("request_field_rules"));
-    assert!(!compatible_config_properties.contains_key("map_max_completion_tokens_to_max_tokens"));
+    assert_eq!(
+        compatible.schema["properties"]["config"]["properties"]["map_max_completion_tokens_to_max_tokens"]
+            ["default"],
+        true
+    );
 }
 
 #[test]
@@ -808,7 +808,7 @@ async fn compatible_create_sends_provider_metadata_from_provider_override() {
 }
 
 #[tokio::test]
-async fn compatible_create_preserves_max_completion_tokens_by_default() {
+async fn compatible_create_maps_max_completion_tokens_to_max_tokens_by_default() {
     let server = MockServer::start().await;
     mount_json_response(
         &server,
@@ -831,46 +831,12 @@ async fn compatible_create_preserves_max_completion_tokens_by_default() {
     client.chat().create(&request).await.unwrap();
 
     let body = last_body(&server).await;
-    assert_eq!(body["max_completion_tokens"], 42);
-    assert!(body.get("max_tokens").is_none());
-}
-
-#[tokio::test]
-async fn compatible_create_maps_max_completion_tokens_to_max_tokens_when_configured() {
-    let server = MockServer::start().await;
-    mount_json_response(
-        &server,
-        "/v1/chat/completions",
-        response_body("gpt-4o-mini", "ok"),
-    )
-    .await;
-    let client = Client::build(openai_config(
-        "openai-compatible",
-        "compatible-tokens",
-        Some(format!("{}/v1", server.uri())),
-        Some(SecretString::from("token")),
-        HashMap::new(),
-        json!({
-            "request_field_rules": {
-                "map": {
-                    "/max_completion_tokens": "/max_tokens"
-                }
-            }
-        }),
-    ))
-    .unwrap();
-    let mut request = request(ModelRef::model("gpt-public"));
-    request.params.max_completion_tokens = Some(42);
-
-    client.chat().create(&request).await.unwrap();
-
-    let body = last_body(&server).await;
     assert_eq!(body["max_tokens"], 42);
     assert!(body.get("max_completion_tokens").is_none());
 }
 
 #[tokio::test]
-async fn compatible_create_mapping_overwrites_existing_target_field() {
+async fn compatible_create_preserves_max_completion_tokens_when_mapping_disabled() {
     let server = MockServer::start().await;
     mount_json_response(
         &server,
@@ -878,314 +844,25 @@ async fn compatible_create_mapping_overwrites_existing_target_field() {
         response_body("gpt-4o-mini", "ok"),
     )
     .await;
-    let mut config = openai_config(
+    let client = Client::build(openai_config(
         "openai-compatible",
         "compatible-tokens",
         Some(format!("{}/v1", server.uri())),
         Some(SecretString::from("token")),
         HashMap::new(),
         json!({
-            "request_field_rules": {
-                "map": {
-                    "/max_completion_tokens": "/max_tokens"
-                }
-            }
+            "map_max_completion_tokens_to_max_tokens": false
         }),
-    );
-    config.deployments[0]
-        .defaults
-        .insert("max_tokens".to_string(), json!(7));
-    let client = Client::build(config).unwrap();
+    ))
+    .unwrap();
     let mut request = request(ModelRef::model("gpt-public"));
     request.params.max_completion_tokens = Some(42);
 
     client.chat().create(&request).await.unwrap();
 
-    assert_eq!(last_body(&server).await["max_tokens"], 42);
-}
-
-#[tokio::test]
-async fn compatible_create_removes_configured_request_field() {
-    let server = MockServer::start().await;
-    mount_json_response(
-        &server,
-        "/v1/chat/completions",
-        response_body("gpt-4o-mini", "ok"),
-    )
-    .await;
-    let client = Client::build(openai_config(
-        "openai-compatible",
-        "compatible-remove",
-        Some(format!("{}/v1", server.uri())),
-        Some(SecretString::from("token")),
-        HashMap::new(),
-        json!({
-            "request_field_rules": {
-                "remove": ["/stream_options"]
-            }
-        }),
-    ))
-    .unwrap();
-    let mut request = request(ModelRef::model("gpt-public"));
-    request.params.stream_options = Some(ChatCompletionStreamOptions {
-        include_usage: Some(true),
-        include_obfuscation: None,
-    });
-
-    client.chat().create(&request).await.unwrap();
-
-    assert!(last_body(&server).await.get("stream_options").is_none());
-}
-
-#[tokio::test]
-async fn compatible_create_applies_model_specific_request_field_rules() {
-    let server = MockServer::start().await;
-    mount_json_response(
-        &server,
-        "/v1/chat/completions",
-        response_body("gpt-4o-mini", "ok"),
-    )
-    .await;
-    let client = Client::build(openai_config(
-        "openai-compatible",
-        "compatible-model-rules",
-        Some(format!("{}/v1", server.uri())),
-        Some(SecretString::from("token")),
-        HashMap::new(),
-        json!({
-            "request_field_rules": {
-                "models": {
-                    "gpt-4o-mini": {
-                        "remove": ["/temperature"]
-                    }
-                }
-            }
-        }),
-    ))
-    .unwrap();
-
-    client
-        .chat()
-        .create(&request(ModelRef::model("gpt-public")))
-        .await
-        .unwrap();
-
-    assert!(last_body(&server).await.get("temperature").is_none());
-}
-
-#[tokio::test]
-async fn compatible_create_supports_nested_object_request_field_mapping() {
-    let server = MockServer::start().await;
-    mount_json_response(
-        &server,
-        "/v1/chat/completions",
-        response_body("gpt-4o-mini", "ok"),
-    )
-    .await;
-    let client = Client::build(openai_config(
-        "openai-compatible",
-        "compatible-nested",
-        Some(format!("{}/v1", server.uri())),
-        Some(SecretString::from("token")),
-        HashMap::new(),
-        json!({
-            "request_field_rules": {
-                "map": {
-                    "/response_format/json_schema/schema": "/provider_schema"
-                }
-            }
-        }),
-    ))
-    .unwrap();
-    let mut request = request(ModelRef::model("gpt-public"));
-    request.params.response_format = Some(ResponseFormat::JsonSchema {
-        json_schema: ResponseFormatJsonSchema {
-            name: "answer".to_string(),
-            description: None,
-            schema: Some(json!({"type": "object"})),
-            strict: None,
-        },
-    });
-
-    client.chat().create(&request).await.unwrap();
-
     let body = last_body(&server).await;
-    assert_eq!(body["provider_schema"], json!({"type": "object"}));
-    assert!(
-        body["response_format"]["json_schema"]
-            .get("schema")
-            .is_none()
-    );
-}
-
-#[tokio::test]
-async fn compatible_create_supports_array_index_request_field_removal() {
-    let server = MockServer::start().await;
-    mount_json_response(
-        &server,
-        "/v1/chat/completions",
-        response_body("gpt-4o-mini", "ok"),
-    )
-    .await;
-    let client = Client::build(openai_config(
-        "openai-compatible",
-        "compatible-array",
-        Some(format!("{}/v1", server.uri())),
-        Some(SecretString::from("token")),
-        HashMap::new(),
-        json!({
-            "request_field_rules": {
-                "remove": ["/tools/0/function/strict"]
-            }
-        }),
-    ))
-    .unwrap();
-    let mut request = request(ModelRef::model("gpt-public"));
-    request.params.tools = Some(vec![ChatCompletionTools::Function(ChatCompletionTool {
-        function: FunctionObject {
-            name: "get_weather".to_string(),
-            description: None,
-            parameters: None,
-            strict: Some(true),
-        },
-    })]);
-
-    client.chat().create(&request).await.unwrap();
-
-    assert!(
-        last_body(&server).await["tools"][0]["function"]
-            .get("strict")
-            .is_none()
-    );
-}
-
-#[tokio::test]
-async fn compatible_create_ignores_missing_request_field_rule_paths() {
-    let server = MockServer::start().await;
-    mount_json_response(
-        &server,
-        "/v1/chat/completions",
-        response_body("gpt-4o-mini", "ok"),
-    )
-    .await;
-    let client = Client::build(openai_config(
-        "openai-compatible",
-        "compatible-missing-path",
-        Some(format!("{}/v1", server.uri())),
-        Some(SecretString::from("token")),
-        HashMap::new(),
-        json!({
-            "request_field_rules": {
-                "map": {
-                    "/missing": "/provider_missing"
-                },
-                "remove": ["/also_missing"]
-            }
-        }),
-    ))
-    .unwrap();
-
-    client
-        .chat()
-        .create(&request(ModelRef::model("gpt-public")))
-        .await
-        .unwrap();
-
-    assert!(last_body(&server).await.get("provider_missing").is_none());
-}
-
-#[tokio::test]
-async fn compatible_create_applies_metadata_overrides_after_request_field_rules() {
-    let server = MockServer::start().await;
-    mount_json_response(
-        &server,
-        "/v1/chat/completions",
-        response_body("gpt-4o-mini", "ok"),
-    )
-    .await;
-    let provider_id = "compatible-metadata-rules";
-    let client = Client::build(openai_config(
-        "openai-compatible",
-        provider_id,
-        Some(format!("{}/v1", server.uri())),
-        Some(SecretString::from("token")),
-        HashMap::new(),
-        json!({
-            "request_field_rules": {
-                "remove": ["/temperature"]
-            }
-        }),
-    ))
-    .unwrap();
-    let mut request = request(ModelRef::model("gpt-public"));
-    let mut overrides = ChatParameterMap::new();
-    overrides.insert("temperature".to_string(), json!(0.9));
-    request
-        .metadata
-        .insert(ProviderId::from(provider_id), overrides);
-
-    client.chat().create(&request).await.unwrap();
-
-    assert_eq!(last_body(&server).await["temperature"], json!(0.9));
-}
-
-#[tokio::test]
-async fn compatible_create_request_field_rules_can_remove_unsupported_defaults() {
-    let server = MockServer::start().await;
-    mount_json_response(
-        &server,
-        "/v1/chat/completions",
-        response_body("gpt-4o-mini", "ok"),
-    )
-    .await;
-    let mut config = openai_config(
-        "openai-compatible",
-        "compatible-unsupported-remove",
-        Some(format!("{}/v1", server.uri())),
-        Some(SecretString::from("token")),
-        HashMap::new(),
-        json!({
-            "request_field_rules": {
-                "remove": ["/extra_body"]
-            }
-        }),
-    );
-    config.deployments[0]
-        .defaults
-        .insert("extra_body".to_string(), json!({"provider_native": true}));
-    let client = Client::build(config).unwrap();
-
-    client
-        .chat()
-        .create(&request(ModelRef::model("gpt-public")))
-        .await
-        .unwrap();
-
-    assert!(last_body(&server).await.get("extra_body").is_none());
-}
-
-#[test]
-fn compatible_provider_rejects_malformed_request_field_rule_pointer() {
-    let err = match Client::build(openai_config(
-        "openai-compatible",
-        "compatible-invalid-pointer",
-        Some("http://localhost:8080/v1".to_string()),
-        Some(SecretString::from("token")),
-        HashMap::new(),
-        json!({
-            "request_field_rules": {
-                "remove": ["temperature"]
-            }
-        }),
-    )) {
-        Ok(_) => panic!("expected provider config error"),
-        Err(err) => err,
-    };
-
-    assert!(matches!(
-        err,
-        SigmaError::ProviderConfig { message, .. } if message.contains("JSON Pointer")
-    ));
+    assert_eq!(body["max_completion_tokens"], 42);
+    assert!(body.get("max_tokens").is_none());
 }
 
 #[tokio::test]

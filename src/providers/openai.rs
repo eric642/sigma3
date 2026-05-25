@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -8,8 +8,9 @@ use bytes::Bytes;
 use futures_core::Stream;
 use http::header::{AUTHORIZATION, CONTENT_TYPE};
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
-use serde::Deserialize;
-use serde_json::{Map, Value, json};
+use serde::ser::{SerializeMap, Serializer};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
 use crate::config::{ChatParameterMap, SecretString};
 use crate::provider_http::{
@@ -74,21 +75,24 @@ impl OpenAiProvider {
     fn from_openai_config(init: ProviderInit) -> SigmaResult<Arc<dyn ProviderDriver>> {
         let _config: OpenAiConfig = init.deserialize_config()?;
 
-        Self::from_config(init, OpenAiFlavor::OpenAi, RequestFieldRules::default())
+        Self::from_config(init, OpenAiFlavor::OpenAi)
     }
 
     fn from_compatible_config(init: ProviderInit) -> SigmaResult<Arc<dyn ProviderDriver>> {
         let config: OpenAiCompatibleConfig = init.deserialize_config()?;
-        let request_field_rules =
-            RequestFieldRules::from_config(config.request_field_rules, &init.id)?;
 
-        Self::from_config(init, OpenAiFlavor::Compatible, request_field_rules)
+        Self::from_config(
+            init,
+            OpenAiFlavor::Compatible {
+                map_max_completion_tokens_to_max_tokens: config
+                    .map_max_completion_tokens_to_max_tokens,
+            },
+        )
     }
 
     fn from_config(
         init: ProviderInit,
         flavor: OpenAiFlavor,
-        request_field_rules: RequestFieldRules,
     ) -> SigmaResult<Arc<dyn ProviderDriver>> {
         let api_base = resolve_api_base(&init, flavor)?;
         let api_key = resolve_api_key(init.common.api_key.clone(), flavor);
@@ -115,7 +119,6 @@ impl OpenAiProvider {
                 api_key,
                 headers,
                 flavor,
-                request_field_rules,
             },
         }))
     }
@@ -139,16 +142,26 @@ impl ProviderDriver for OpenAiProvider {
 #[serde(default, deny_unknown_fields)]
 struct OpenAiConfig {}
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct OpenAiCompatibleConfig {
-    request_field_rules: RequestFieldRulesConfig,
+    map_max_completion_tokens_to_max_tokens: bool,
+}
+
+impl Default for OpenAiCompatibleConfig {
+    fn default() -> Self {
+        Self {
+            map_max_completion_tokens_to_max_tokens: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpenAiFlavor {
     OpenAi,
-    Compatible,
+    Compatible {
+        map_max_completion_tokens_to_max_tokens: bool,
+    },
 }
 
 impl OpenAiFlavor {
@@ -157,7 +170,16 @@ impl OpenAiFlavor {
     }
 
     fn sanitizes_usage(self) -> bool {
-        self == Self::Compatible
+        matches!(self, Self::Compatible { .. })
+    }
+
+    fn maps_max_completion_tokens_to_max_tokens(self) -> bool {
+        matches!(
+            self,
+            Self::Compatible {
+                map_max_completion_tokens_to_max_tokens: true
+            }
+        )
     }
 }
 
@@ -167,331 +189,73 @@ struct OpenAiChatAdapter {
     api_key: Option<SecretString>,
     headers: HeaderMap,
     flavor: OpenAiFlavor,
-    request_field_rules: RequestFieldRules,
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct RequestFieldRulesConfig {
-    #[serde(rename = "map")]
-    mappings: BTreeMap<String, String>,
-    remove: Vec<String>,
-    models: BTreeMap<String, RequestFieldRuleSetConfig>,
+struct OpenAiChatBody<'a> {
+    params: &'a ChatParameterMap,
+    provider_model: &'a ModelName,
+    messages: &'a Value,
+    body_overrides: Option<&'a ChatParameterMap>,
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct RequestFieldRuleSetConfig {
-    #[serde(rename = "map")]
-    mappings: BTreeMap<String, String>,
-    remove: Vec<String>,
-}
+impl Serialize for OpenAiChatBody<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut len = self
+            .params
+            .keys()
+            .filter(|key| {
+                !is_generated_body_key(key.as_str())
+                    && !contains_body_override(self.body_overrides, key.as_str())
+            })
+            .count();
 
-#[derive(Debug, Default)]
-struct RequestFieldRules {
-    global: RequestFieldRuleSet,
-    models: HashMap<ModelName, RequestFieldRuleSet>,
-}
-
-impl RequestFieldRules {
-    fn from_config(config: RequestFieldRulesConfig, provider: &ProviderId) -> SigmaResult<Self> {
-        let global = RequestFieldRuleSet::from_parts(
-            config.mappings,
-            config.remove,
-            provider,
-            "request_field_rules",
-        )?;
-        let mut models = HashMap::new();
-
-        for (model, rules) in config.models {
-            let context = format!("request_field_rules.models.{model}");
-            let rules =
-                RequestFieldRuleSet::from_parts(rules.mappings, rules.remove, provider, &context)?;
-            models.insert(ModelName::from(model), rules);
+        if !contains_body_override(self.body_overrides, "model") {
+            len += 1;
+        }
+        if !contains_body_override(self.body_overrides, "messages") {
+            len += 1;
+        }
+        if let Some(body_overrides) = self.body_overrides {
+            len += body_overrides.len();
         }
 
-        Ok(Self { global, models })
-    }
-
-    fn apply(&self, provider_model: &ModelName, body: &mut Value) {
-        self.global.apply(body);
-        if let Some(model_rules) = self.models.get(provider_model) {
-            model_rules.apply(body);
-        }
-    }
-
-    fn extend_supported_openai_params(&self, params: &mut Vec<String>) {
-        self.global.extend_supported_openai_params(params);
-        for model_rules in self.models.values() {
-            model_rules.extend_supported_openai_params(params);
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-struct RequestFieldRuleSet {
-    mappings: Vec<RequestFieldMapping>,
-    removals: Vec<JsonPointer>,
-}
-
-impl RequestFieldRuleSet {
-    fn from_parts(
-        mappings: BTreeMap<String, String>,
-        removals: Vec<String>,
-        provider: &ProviderId,
-        context: &str,
-    ) -> SigmaResult<Self> {
-        let mut parsed_mappings = Vec::with_capacity(mappings.len());
-        for (source, target) in mappings {
-            parsed_mappings.push(RequestFieldMapping {
-                source: JsonPointer::parse(&source, provider, context)?,
-                target: JsonPointer::parse(&target, provider, context)?,
-            });
-        }
-
-        let mut parsed_removals = Vec::with_capacity(removals.len());
-        for removal in removals {
-            parsed_removals.push(JsonPointer::parse(&removal, provider, context)?);
-        }
-
-        Ok(Self {
-            mappings: parsed_mappings,
-            removals: parsed_removals,
-        })
-    }
-
-    fn apply(&self, body: &mut Value) {
-        for mapping in &self.mappings {
-            move_json_pointer(body, &mapping.source, &mapping.target);
-        }
-
-        for removal in &self.removals {
-            remove_json_pointer(body, removal);
-        }
-    }
-
-    fn extend_supported_openai_params(&self, params: &mut Vec<String>) {
-        for mapping in &self.mappings {
-            push_supported_param(params, mapping.source.top_level_field());
-        }
-
-        for removal in &self.removals {
-            push_supported_param(params, removal.top_level_field());
-        }
-    }
-}
-
-#[derive(Debug)]
-struct RequestFieldMapping {
-    source: JsonPointer,
-    target: JsonPointer,
-}
-
-#[derive(Debug)]
-struct JsonPointer {
-    tokens: Vec<String>,
-}
-
-impl JsonPointer {
-    fn parse(pointer: &str, provider: &ProviderId, context: &str) -> SigmaResult<Self> {
-        if pointer.is_empty() || !pointer.starts_with('/') {
-            return Err(invalid_json_pointer(
-                provider,
-                pointer,
-                context,
-                "pointers must start with `/`",
-            ));
-        }
-
-        let mut tokens = Vec::new();
-        for token in pointer[1..].split('/') {
-            tokens
-                .push(decode_json_pointer_token(token).map_err(|message| {
-                    invalid_json_pointer(provider, pointer, context, message)
-                })?);
-        }
-
-        Ok(Self { tokens })
-    }
-
-    fn top_level_field(&self) -> &str {
-        self.tokens.first().map(String::as_str).unwrap_or_default()
-    }
-}
-
-fn decode_json_pointer_token(token: &str) -> Result<String, String> {
-    let mut decoded = String::with_capacity(token.len());
-    let mut chars = token.chars();
-
-    while let Some(ch) = chars.next() {
-        if ch != '~' {
-            decoded.push(ch);
-            continue;
-        }
-
-        match chars.next() {
-            Some('0') => decoded.push('~'),
-            Some('1') => decoded.push('/'),
-            Some(other) => return Err(format!("invalid escape `~{other}`")),
-            None => return Err("invalid trailing `~` escape".to_string()),
-        }
-    }
-
-    Ok(decoded)
-}
-
-fn invalid_json_pointer(
-    provider: &ProviderId,
-    pointer: &str,
-    context: &str,
-    message: impl Into<String>,
-) -> SigmaError {
-    SigmaError::ProviderConfig {
-        provider: Some(provider.clone()),
-        message: format!(
-            "invalid JSON Pointer `{pointer}` in openai-compatible config {context}: {}",
-            message.into()
-        ),
-    }
-}
-
-fn push_supported_param(params: &mut Vec<String>, param: &str) {
-    if !param.is_empty() && !params.iter().any(|existing| existing == param) {
-        params.push(param.to_string());
-    }
-}
-
-fn build_openai_chat_body(
-    params: &ChatParameterMap,
-    provider_model: &ModelName,
-    messages: &Value,
-    body_overrides: Option<&ChatParameterMap>,
-    request_field_rules: &RequestFieldRules,
-) -> Value {
-    let mut body = Map::new();
-    for (key, value) in params {
-        if !is_generated_body_key(key.as_str()) {
-            body.insert(key.clone(), value.clone());
-        }
-    }
-    body.insert(
-        "model".to_string(),
-        Value::String(provider_model.as_str().to_string()),
-    );
-    body.insert("messages".to_string(), messages.clone());
-
-    let mut body = Value::Object(body);
-    request_field_rules.apply(provider_model, &mut body);
-
-    if let (Value::Object(body), Some(body_overrides)) = (&mut body, body_overrides) {
-        for (key, value) in body_overrides {
-            body.insert(key.clone(), value.clone());
-        }
-    }
-
-    body
-}
-
-fn move_json_pointer(body: &mut Value, source: &JsonPointer, target: &JsonPointer) {
-    if let Some(value) = remove_json_pointer(body, source) {
-        set_json_pointer(body, target, value);
-    }
-}
-
-fn remove_json_pointer(body: &mut Value, pointer: &JsonPointer) -> Option<Value> {
-    let (last, parents) = pointer.tokens.split_last()?;
-    let parent = json_pointer_parent_mut(body, parents)?;
-
-    match parent {
-        Value::Object(object) => object.remove(last),
-        Value::Array(array) => {
-            let index = array_index(last)?;
-            if index < array.len() {
-                Some(array.remove(index))
-            } else {
-                None
+        let mut map = serializer.serialize_map(Some(len))?;
+        for (key, value) in self.params {
+            if !is_generated_body_key(key.as_str())
+                && !contains_body_override(self.body_overrides, key.as_str())
+            {
+                map.serialize_entry(key, value)?;
             }
         }
-        _ => None,
-    }
-}
-
-fn set_json_pointer(body: &mut Value, pointer: &JsonPointer, value: Value) -> bool {
-    let Some((last, parents)) = pointer.tokens.split_last() else {
-        return false;
-    };
-    let Some(parent) = json_pointer_parent_mut_or_create(body, parents) else {
-        return false;
-    };
-
-    match parent {
-        Value::Object(object) => {
-            object.insert(last.clone(), value);
-            true
+        if !contains_body_override(self.body_overrides, "model") {
+            map.serialize_entry("model", self.provider_model)?;
         }
-        Value::Array(array) => {
-            let Some(index) = array_index(last) else {
-                return false;
-            };
-            let Some(slot) = array.get_mut(index) else {
-                return false;
-            };
-            *slot = value;
-            true
+        if !contains_body_override(self.body_overrides, "messages") {
+            map.serialize_entry("messages", self.messages)?;
         }
-        _ => false,
+        if let Some(body_overrides) = self.body_overrides {
+            for (key, value) in body_overrides {
+                map.serialize_entry(key, value)?;
+            }
+        }
+        map.end()
     }
-}
-
-fn json_pointer_parent_mut<'a>(
-    mut value: &'a mut Value,
-    tokens: &[String],
-) -> Option<&'a mut Value> {
-    for token in tokens {
-        value = match value {
-            Value::Object(object) => object.get_mut(token)?,
-            Value::Array(array) => array.get_mut(array_index(token)?)?,
-            _ => return None,
-        };
-    }
-
-    Some(value)
-}
-
-fn json_pointer_parent_mut_or_create<'a>(
-    mut value: &'a mut Value,
-    tokens: &[String],
-) -> Option<&'a mut Value> {
-    for token in tokens {
-        value = match value {
-            Value::Object(object) => object
-                .entry(token.clone())
-                .or_insert_with(|| Value::Object(Map::new())),
-            Value::Array(array) => array.get_mut(array_index(token)?)?,
-            _ => return None,
-        };
-    }
-
-    Some(value)
-}
-
-fn array_index(token: &str) -> Option<usize> {
-    token.parse::<usize>().ok()
 }
 
 fn is_generated_body_key(key: &str) -> bool {
     key == "model" || key == "messages"
 }
 
+fn contains_body_override(body_overrides: Option<&ChatParameterMap>, key: &str) -> bool {
+    body_overrides.is_some_and(|body_overrides| body_overrides.contains_key(key))
+}
+
 impl ChatCompletionAdapter for OpenAiChatAdapter {
-    fn supported_openai_params(&self) -> Vec<String> {
-        let mut params = SUPPORTED_OPENAI_CHAT_PARAMS
-            .iter()
-            .map(|param| (*param).to_string())
-            .collect::<Vec<_>>();
-        self.request_field_rules
-            .extend_supported_openai_params(&mut params);
-        params
+    fn supported_openai_params(&self) -> Vec<&'static str> {
+        SUPPORTED_OPENAI_CHAT_PARAMS.to_vec()
     }
 
     fn translate_messages(&self, messages: &[ChatCompletionRequestMessage]) -> SigmaResult<Value> {
@@ -501,7 +265,14 @@ impl ChatCompletionAdapter for OpenAiChatAdapter {
         })
     }
 
-    fn map_openai_params(&self, params: ChatParameterMap) -> SigmaResult<ChatParameterMap> {
+    fn map_openai_params(&self, mut params: ChatParameterMap) -> SigmaResult<ChatParameterMap> {
+        if self.flavor.maps_max_completion_tokens_to_max_tokens()
+            && params.contains_key("max_completion_tokens")
+            && let Some(value) = params.remove("max_completion_tokens")
+        {
+            params.insert("max_tokens".to_string(), value);
+        }
+
         Ok(params)
     }
 
@@ -521,14 +292,13 @@ impl ChatCompletionAdapter for OpenAiChatAdapter {
         request: ChatAdapterRequest<'_>,
         endpoint: ProviderEndpoint,
     ) -> SigmaResult<ProviderRequest> {
-        let body = build_openai_chat_body(
-            &request.params,
-            request.context.provider_model,
-            &request.messages,
-            request.body_overrides,
-            &self.request_field_rules,
-        );
-        let body = serde_json::to_vec(&body).map_err(|err| SigmaError::ProviderTransform {
+        let body = serde_json::to_vec(&OpenAiChatBody {
+            params: &request.params,
+            provider_model: request.context.provider_model,
+            messages: &request.messages,
+            body_overrides: request.body_overrides,
+        })
+        .map_err(|err| SigmaError::ProviderTransform {
             provider: self.provider.clone(),
             message: err.to_string(),
         })?;
@@ -759,7 +529,7 @@ fn resolve_api_base(init: &ProviderInit, flavor: OpenAiFlavor) -> SigmaResult<St
             .or_else(|| non_empty_env("OPENAI_BASE_URL"))
             .or_else(|| non_empty_env("OPENAI_API_BASE"))
             .unwrap_or_else(|| OPENAI_DEFAULT_BASE_URL.to_string())),
-        OpenAiFlavor::Compatible => init
+        OpenAiFlavor::Compatible { .. } => init
             .common
             .api_base
             .clone()
@@ -775,7 +545,7 @@ fn resolve_api_base(init: &ProviderInit, flavor: OpenAiFlavor) -> SigmaResult<St
 fn resolve_api_key(api_key: Option<SecretString>, flavor: OpenAiFlavor) -> Option<SecretString> {
     api_key.or_else(|| match flavor {
         OpenAiFlavor::OpenAi => non_empty_env("OPENAI_API_KEY").map(SecretString::from),
-        OpenAiFlavor::Compatible => non_empty_env("OPENAI_COMPATIBLE_API_KEY")
+        OpenAiFlavor::Compatible { .. } => non_empty_env("OPENAI_COMPATIBLE_API_KEY")
             .or_else(|| non_empty_env("OPENAI_LIKE_API_KEY"))
             .map(SecretString::from),
     })
@@ -915,62 +685,12 @@ fn openai_compatible_config_schema() -> Value {
         "additionalProperties": false,
         "default": {},
         "properties": {
-            "request_field_rules": {
-                "type": "object",
-                "additionalProperties": false,
-                "default": {},
-                "description": "Explicit request-body field mapping and removal rules for OpenAI-compatible endpoints. Rules use JSON Pointer paths and run before request metadata overrides.",
-                "properties": {
-                    "map": request_field_rule_map_schema(),
-                    "remove": request_field_rule_remove_schema(),
-                    "models": {
-                        "type": "object",
-                        "additionalProperties": request_field_rule_set_schema(),
-                        "default": {},
-                        "description": "Rules keyed by provider-native model name. Matching model rules run after provider-level rules."
-                    }
-                }
+            "map_max_completion_tokens_to_max_tokens": {
+                "type": "boolean",
+                "default": true,
+                "description": "When true, maps OpenAI max_completion_tokens to legacy max_tokens for compatible endpoints."
             }
         }
-    })
-}
-
-fn request_field_rule_set_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "default": {},
-        "properties": {
-            "map": request_field_rule_map_schema(),
-            "remove": request_field_rule_remove_schema()
-        }
-    })
-}
-
-fn request_field_rule_map_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": {
-            "type": "string",
-            "pattern": "^/"
-        },
-        "propertyNames": {
-            "pattern": "^/"
-        },
-        "default": {},
-        "description": "Moves each source JSON Pointer value to the target JSON Pointer. Sources are removed and targets are overwritten when present."
-    })
-}
-
-fn request_field_rule_remove_schema() -> Value {
-    json!({
-        "type": "array",
-        "items": {
-            "type": "string",
-            "pattern": "^/"
-        },
-        "default": [],
-        "description": "JSON Pointer paths to remove from the provider request body. Missing paths are ignored."
     })
 }
 

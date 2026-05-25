@@ -140,9 +140,9 @@ pub struct ProviderInstanceConfig {
     /// Provider crates should document this object through the
     /// `config_schema` function registered with [`crate::submit_provider!`] and
     /// deserialize it with [`crate::ProviderInit::deserialize_config`]. The
-    /// built-in `openai-compatible` provider accepts `request_field_rules` for
-    /// explicit JSON Pointer based request-body field mapping and removal,
-    /// including per-provider-model overrides.
+    /// built-in `openai-compatible` provider accepts
+    /// `map_max_completion_tokens_to_max_tokens: bool`, defaulting to `true`,
+    /// for endpoints that expect legacy `max_tokens`.
     #[serde(default)]
     pub config: ProviderConfigMap,
 }
