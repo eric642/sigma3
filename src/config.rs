@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -29,11 +30,11 @@ pub type ProviderMetadataMap = HashMap<ProviderId, ChatParameterMap>;
 
 /// Provider-specific configuration as a JSON-compatible object.
 ///
-/// Core sigma does not interpret these fields. Provider constructors should
-/// call [`crate::ProviderInit::deserialize_config`] to read this map into a
-/// provider-owned typed configuration struct. Because the map uses Serde data
-/// model values, callers can populate it from JSON, TOML, YAML, or any other
-/// Serde format before building a [`ClientConfig`].
+/// Core sigma does not interpret these fields. Provider registrations bind this
+/// map to the typed `config` type passed to [`crate::submit_provider!`] before
+/// calling the provider constructor. Because the map uses Serde data model
+/// values, callers can populate it from JSON, TOML, YAML, or any other Serde
+/// format before building a [`ClientConfig`].
 pub type ProviderConfigMap = serde_json::Map<String, Value>;
 
 /// Redacted secret string for API keys and other provider credentials.
@@ -41,7 +42,7 @@ pub type ProviderConfigMap = serde_json::Map<String, Value>;
 /// `Debug` output never prints the secret value. Provider constructors can call
 /// [`SecretString::expose_secret`] when they need to build authentication
 /// headers or signing material.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct SecretString(String);
 
@@ -73,7 +74,7 @@ impl From<String> for SecretString {
 }
 
 /// Policy for OpenAI-compatible request parameters a provider does not support.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ParamPolicy {
     /// Return [`crate::SigmaError::UnsupportedParams`] before sending a request.
@@ -96,7 +97,7 @@ pub enum ParamPolicy {
 /// the routed provider-native model name, not the public model name. This keeps
 /// deployment routing and [`crate::ModelRef::provider_model`] direct routing
 /// consistent.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ChatParamConfig {
     /// Policy for parameters not accepted by the resolved support set.
     ///
@@ -148,7 +149,7 @@ pub struct ChatParamConfig {
 /// This has the same behavior as [`ChatParamConfig`] except it cannot contain
 /// nested model rules. `supported` and `rename` use `Option` so a model can
 /// either inherit provider-level values or replace them.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ChatParamModelConfig {
     /// Model-specific unsupported-parameter policy.
     #[serde(default)]
@@ -175,7 +176,7 @@ pub struct ChatParamModelConfig {
 /// configuration files use `api_base`, `api_key`, `headers`, and
 /// `chat_params` beside `id` and `kind`. Provider-specific settings belong in
 /// [`ProviderInstanceConfig::config`].
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ProviderCommonConfig {
     /// Optional provider base URL override.
     ///
@@ -213,7 +214,7 @@ pub struct ProviderCommonConfig {
 /// instance so deployments can route to it. sigma links built-in chat
 /// providers for `kind = "openai"` and `kind = "openai-compatible"`; additional
 /// provider crates can register their own kinds with [`crate::submit_provider!`].
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ProviderInstanceConfig {
     /// Stable id for this configured provider instance.
     pub id: ProviderId,
@@ -229,10 +230,11 @@ pub struct ProviderInstanceConfig {
     pub common: ProviderCommonConfig,
     /// Provider-specific configuration that sigma core does not interpret.
     ///
-    /// Provider crates should document this object through the
-    /// `config_schema` function registered with [`crate::submit_provider!`] and
-    /// deserialize it with [`crate::ProviderInit::deserialize_config`]. Common
-    /// chat parameter support, dropping, allowing, and renaming rules belong in
+    /// Provider crates should define a typed config struct and register it with
+    /// [`crate::submit_provider!`]. sigma uses that type both to deserialize
+    /// this object before invoking the constructor and to generate provider
+    /// configuration schemas. Common chat parameter support, dropping,
+    /// allowing, and renaming rules belong in
     /// [`ProviderCommonConfig::chat_params`].
     #[serde(default)]
     pub config: ProviderConfigMap,
@@ -244,7 +246,7 @@ pub struct ProviderInstanceConfig {
 /// provider driver. They let applications expose stable model names while
 /// changing provider instances, provider-native model names, defaults, or
 /// metadata in configuration.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ModelDeploymentConfig {
     /// Stable deployment id for direct deployment routing.
     pub id: DeploymentId,
@@ -268,7 +270,7 @@ pub struct ModelDeploymentConfig {
 /// `deployments` define routing from public model names to provider instances.
 /// `default_model` is used when a request's model is the default empty
 /// [`crate::ModelRef`].
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ClientConfig {
     /// Provider instances to initialize during [`crate::Client::build`].
     #[serde(default)]

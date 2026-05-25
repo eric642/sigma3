@@ -8,9 +8,10 @@ use bytes::Bytes;
 use futures_core::Stream;
 use http::header::{AUTHORIZATION, CONTENT_TYPE};
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
+use schemars::JsonSchema;
 use serde::ser::{SerializeMap, Serializer};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::config::{ChatParameterMap, SecretString};
 use crate::provider_http::{
@@ -72,20 +73,20 @@ struct OpenAiProvider {
 }
 
 impl OpenAiProvider {
-    fn from_openai_config(init: ProviderInit) -> SigmaResult<Arc<dyn ProviderDriver>> {
-        let _config: OpenAiConfig = init.deserialize_config()?;
-
+    fn from_openai_config(
+        init: ProviderInit<OpenAiConfig>,
+    ) -> SigmaResult<Arc<dyn ProviderDriver>> {
         Self::from_config(init, OpenAiFlavor::OpenAi)
     }
 
-    fn from_compatible_config(init: ProviderInit) -> SigmaResult<Arc<dyn ProviderDriver>> {
-        let _config: OpenAiCompatibleConfig = init.deserialize_config()?;
-
+    fn from_compatible_config(
+        init: ProviderInit<OpenAiCompatibleConfig>,
+    ) -> SigmaResult<Arc<dyn ProviderDriver>> {
         Self::from_config(init, OpenAiFlavor::Compatible)
     }
 
-    fn from_config(
-        init: ProviderInit,
+    fn from_config<TConfig>(
+        init: ProviderInit<TConfig>,
         flavor: OpenAiFlavor,
     ) -> SigmaResult<Arc<dyn ProviderDriver>> {
         let api_base = resolve_api_base(&init, flavor)?;
@@ -132,11 +133,11 @@ impl ProviderDriver for OpenAiProvider {
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 struct OpenAiConfig {}
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 struct OpenAiCompatibleConfig {}
 
@@ -486,7 +487,10 @@ impl Stream for OpenAiSseStream {
     }
 }
 
-fn resolve_api_base(init: &ProviderInit, flavor: OpenAiFlavor) -> SigmaResult<String> {
+fn resolve_api_base<TConfig>(
+    init: &ProviderInit<TConfig>,
+    flavor: OpenAiFlavor,
+) -> SigmaResult<String> {
     match flavor {
         OpenAiFlavor::OpenAi => Ok(init
             .common
@@ -636,32 +640,14 @@ fn event_data(event: &str) -> Option<String> {
     }
 }
 
-fn openai_config_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "default": {},
-        "description": "The built-in OpenAI provider does not require provider-specific config."
-    })
-}
-
-fn openai_compatible_config_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "default": {},
-        "description": "The built-in OpenAI-compatible provider does not require provider-specific config. Use top-level chat_params.rename for field renames such as max_completion_tokens to max_tokens."
-    })
-}
-
 submit_provider! {
     kind: OPENAI_KIND,
     constructor: OpenAiProvider::from_openai_config,
-    config_schema: openai_config_schema,
+    config: OpenAiConfig,
 }
 
 submit_provider! {
     kind: OPENAI_COMPATIBLE_KIND,
     constructor: OpenAiProvider::from_compatible_config,
-    config_schema: openai_compatible_config_schema,
+    config: OpenAiCompatibleConfig,
 }

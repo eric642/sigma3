@@ -11,6 +11,7 @@ futures-util = "0.3"
 http = "1"
 inventory = "0.3"
 reqwest = { version = "0.13", default-features = false, features = ["stream", "rustls"] }
+schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 derive_builder = "0.20"

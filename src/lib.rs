@@ -59,6 +59,11 @@ pub mod types;
 #[doc(hidden)]
 pub use inventory;
 
+#[doc(hidden)]
+pub mod __private {
+    pub use serde_json;
+}
+
 pub use client::*;
 pub use config::*;
 pub use error::{SigmaError, SigmaResult};

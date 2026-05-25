@@ -1,14 +1,15 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures_core::Stream;
+use schemars::{JsonSchema, generate::SchemaSettings};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use crate::config::{
-    ChatParameterMap, ProviderCommonConfig, ProviderConfigMap, ProviderInstanceConfig,
+    ChatParameterMap, ParamPolicy, ProviderCommonConfig, ProviderConfigMap, ProviderInstanceConfig,
 };
 use crate::provider_http::{
     ProviderByteStream, ProviderEndpoint, ProviderRequest, ProviderResponse, SignedProviderRequest,
@@ -28,14 +29,17 @@ use crate::{
 /// submitted as static inventory data.
 pub type ProviderConstructor = fn(ProviderInit) -> SigmaResult<Arc<dyn ProviderDriver>>;
 
-/// Function pointer used to return a provider-specific configuration schema.
+/// Function pointer used by typed provider constructors.
 ///
-/// The returned value should be a JSON Schema object describing the nested
-/// [`ProviderInstanceConfig::config`] object for one provider kind. Function
-/// pointers keep provider registrations static and inventory-friendly while
-/// letting provider crates hand-write schemas or generate them with their own
-/// tooling.
-pub type ProviderConfigSchemaFn = fn() -> Value;
+/// Provider crates normally do not name this type directly. They pass a
+/// function with this shape to [`crate::submit_provider!`], and sigma generates
+/// the erased inventory wrapper that deserializes the provider-specific
+/// configuration object before calling it.
+pub type TypedProviderConstructor<TConfig> =
+    fn(ProviderInit<TConfig>) -> SigmaResult<Arc<dyn ProviderDriver>>;
+
+#[doc(hidden)]
+pub type ProviderInstanceConfigSchemaFn = fn(ProviderKindStatic) -> Value;
 
 /// Static provider registration collected by the inventory registry.
 ///
@@ -44,11 +48,31 @@ pub type ProviderConfigSchemaFn = fn() -> Value;
 #[derive(Debug, Clone, Copy)]
 pub struct ProviderRegistration {
     /// Provider kind matched against [`crate::ProviderInstanceConfig::kind`].
-    pub kind: ProviderKindStatic,
+    kind: ProviderKindStatic,
     /// Constructor called for each configured provider instance of this kind.
-    pub constructor: ProviderConstructor,
-    /// Schema for this provider kind's nested configuration object.
-    pub config_schema: ProviderConfigSchemaFn,
+    constructor: ProviderConstructor,
+    /// Schema for this provider kind's full provider instance configuration object.
+    instance_config_schema: ProviderInstanceConfigSchemaFn,
+}
+
+impl ProviderRegistration {
+    /// Creates a provider registration from erased inventory function pointers.
+    ///
+    /// This is public only so [`crate::provider_registration!`] can expand in
+    /// downstream crates. Provider crates should use [`crate::submit_provider!`]
+    /// or [`crate::provider_registration!`] instead of calling this directly.
+    #[doc(hidden)]
+    pub const fn __from_erased(
+        kind: ProviderKindStatic,
+        constructor: ProviderConstructor,
+        instance_config_schema: ProviderInstanceConfigSchemaFn,
+    ) -> Self {
+        Self {
+            kind,
+            constructor,
+            instance_config_schema,
+        }
+    }
 }
 
 inventory::collect!(ProviderRegistration);
@@ -145,133 +169,154 @@ impl ProviderCatalog {
             .into_iter()
             .map(|(kind, registration)| ProviderInstanceConfigSchema {
                 kind: kind.clone(),
-                schema: provider_instance_config_schema(
-                    registration.kind,
-                    (registration.config_schema)(),
-                ),
+                schema: (registration.instance_config_schema)(registration.kind),
             })
             .collect()
     }
 }
 
-fn provider_instance_config_schema(kind: ProviderKindStatic, config_schema: Value) -> Value {
-    json!({
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": format!("{} provider instance", kind.as_str()),
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["id", "kind"],
-        "properties": {
-            "id": {
-                "type": "string",
-                "description": "Stable provider instance id used by deployments and direct provider-model routing."
-            },
-            "kind": {
-                "const": kind.as_str(),
-                "description": "Registered provider kind used to select the provider constructor."
-            },
-            "api_base": {
-                "type": "string",
-                "description": "Optional provider API base URL override."
-            },
-            "api_key": {
-                "type": "string",
-                "description": "Optional provider credential."
-            },
-            "headers": {
-                "type": "object",
-                "additionalProperties": {
-                    "type": "string"
-                },
-                "default": {},
-                "description": "Static headers made available to the provider constructor."
-            },
-            "chat_params": chat_param_config_schema(),
-            "config": config_schema
-        }
-    })
+/// Generates the full provider instance schema for a typed provider config.
+///
+/// This helper is used by [`crate::provider_registration!`] and is exposed so
+/// macro expansion works from provider crates. The generated schema describes a
+/// complete [`ProviderInstanceConfig`] object for `kind`, with common sigma
+/// provider fields at the top level and `TConfig` under `config`.
+#[doc(hidden)]
+pub fn provider_instance_config_schema_for<TConfig>(kind: ProviderKindStatic) -> Value
+where
+    TConfig: JsonSchema,
+{
+    let mut schema = schema_value_for::<ProviderInstanceConfigSchemaView<TConfig>>();
+    let object = schema
+        .as_object_mut()
+        .expect("schemars generated a non-object provider instance schema");
+
+    object.insert(
+        "title".to_string(),
+        format!("{} provider instance", kind.as_str()).into(),
+    );
+    object.insert(
+        "$schema".to_string(),
+        "https://json-schema.org/draft/2020-12/schema".into(),
+    );
+    object.insert("additionalProperties".to_string(), false.into());
+
+    let properties = object
+        .get_mut("properties")
+        .and_then(Value::as_object_mut)
+        .expect("provider instance schema should have object properties");
+    properties.insert(
+        "kind".to_string(),
+        json!({
+            "const": kind.as_str(),
+            "description": "Registered provider kind used to select the provider constructor."
+        }),
+    );
+
+    schema
 }
 
-fn chat_param_config_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "default": {},
-        "description": "Common chat parameter support, allow, drop, rename, and per-provider-model override rules.",
-        "properties": {
-            "policy": {
-                "type": "string",
-                "enum": ["reject_unsupported", "drop_unsupported"],
-                "default": "reject_unsupported",
-                "description": "How sigma handles parameters outside the resolved provider support set."
-            },
-            "supported": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Complete OpenAI-compatible parameter support set. When omitted, the provider adapter default is used."
-            },
-            "allow": {
-                "type": "array",
-                "items": {"type": "string"},
-                "default": [],
-                "description": "Additional parameter names accepted as-is."
-            },
-            "drop": {
-                "type": "array",
-                "items": {"type": "string"},
-                "default": [],
-                "description": "Top-level parameter names or nested paths to remove before sending the provider request."
-            },
-            "rename": {
-                "type": "object",
-                "additionalProperties": {"type": "string"},
-                "description": "Top-level source-to-target field renames applied after unsupported-parameter handling."
-            },
-            "models": {
-                "type": "object",
-                "additionalProperties": chat_param_model_config_schema(),
-                "default": {},
-                "description": "Exact provider-native model names mapped to model-specific parameter rules."
-            }
-        }
-    })
+fn schema_value_for<T>() -> Value
+where
+    T: JsonSchema,
+{
+    SchemaSettings::draft2020_12()
+        .with(|settings| {
+            settings.inline_subschemas = true;
+        })
+        .into_generator()
+        .into_root_schema_for::<T>()
+        .to_value()
 }
 
-fn chat_param_model_config_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "default": {},
-        "properties": {
-            "policy": {
-                "type": "string",
-                "enum": ["reject_unsupported", "drop_unsupported"],
-                "description": "Model-specific unsupported-parameter policy."
-            },
-            "supported": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Complete support set for this provider-native model."
-            },
-            "allow": {
-                "type": "array",
-                "items": {"type": "string"},
-                "default": [],
-                "description": "Additional accepted parameter names for this provider-native model."
-            },
-            "drop": {
-                "type": "array",
-                "items": {"type": "string"},
-                "default": [],
-                "description": "Top-level parameter names or nested paths to remove for this model."
-            },
-            "rename": {
-                "type": "object",
-                "additionalProperties": {"type": "string"},
-                "description": "Top-level source-to-target field renames for this model."
-            }
-        }
-    })
+#[derive(JsonSchema)]
+#[schemars(deny_unknown_fields)]
+#[allow(dead_code)]
+struct ProviderInstanceConfigSchemaView<TConfig: JsonSchema> {
+    /// Stable provider instance id used by deployments and direct provider-model routing.
+    id: ProviderId,
+    /// Registered provider kind used to select the provider constructor.
+    kind: ProviderKind,
+    #[serde(flatten)]
+    common: ProviderCommonConfigSchemaView,
+    /// Provider-specific configuration passed to the selected provider constructor.
+    #[serde(default)]
+    #[schemars(!default)]
+    config: TConfig,
+}
+
+#[derive(Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+#[allow(dead_code)]
+struct ProviderCommonConfigSchemaView {
+    /// Optional provider API base URL override.
+    #[serde(default)]
+    #[schemars(!default)]
+    api_base: String,
+    /// Optional provider credential.
+    #[serde(default)]
+    #[schemars(!default)]
+    api_key: String,
+    /// Static headers made available to the provider constructor.
+    #[serde(default)]
+    headers: HashMap<String, String>,
+    /// Common chat parameter support, allow, drop, rename, and per-provider-model override rules.
+    #[serde(default)]
+    chat_params: ChatParamConfigSchemaView,
+}
+
+#[derive(Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+#[allow(dead_code)]
+struct ChatParamConfigSchemaView {
+    /// How sigma handles parameters outside the resolved provider support set.
+    #[serde(default = "default_param_policy")]
+    policy: ParamPolicy,
+    /// Complete OpenAI-compatible parameter support set. When omitted, the provider adapter default is used.
+    #[serde(default)]
+    #[schemars(!default)]
+    supported: Vec<String>,
+    /// Additional parameter names accepted as-is.
+    #[serde(default)]
+    allow: Vec<String>,
+    /// Top-level parameter names or nested paths to remove before sending the provider request.
+    #[serde(default)]
+    drop: Vec<String>,
+    /// Top-level source-to-target field renames applied after unsupported-parameter handling.
+    #[serde(default)]
+    #[schemars(!default)]
+    rename: BTreeMap<String, String>,
+    /// Exact provider-native model names mapped to model-specific parameter rules.
+    #[serde(default)]
+    models: BTreeMap<ModelName, ChatParamModelConfigSchemaView>,
+}
+
+#[derive(Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+#[allow(dead_code)]
+struct ChatParamModelConfigSchemaView {
+    /// Model-specific unsupported-parameter policy.
+    #[serde(default)]
+    #[schemars(!default)]
+    policy: ParamPolicy,
+    /// Complete support set for this provider-native model.
+    #[serde(default)]
+    #[schemars(!default)]
+    supported: Vec<String>,
+    /// Additional accepted parameter names for this provider-native model.
+    #[serde(default)]
+    allow: Vec<String>,
+    /// Top-level parameter names or nested paths to remove for this model.
+    #[serde(default)]
+    drop: Vec<String>,
+    /// Top-level source-to-target field renames for this model.
+    #[serde(default)]
+    #[schemars(!default)]
+    rename: BTreeMap<String, String>,
+}
+
+const fn default_param_policy() -> ParamPolicy {
+    ParamPolicy::RejectUnsupported
 }
 
 /// Initialization data passed to a provider constructor.
@@ -280,7 +325,7 @@ fn chat_param_model_config_schema() -> Value {
 /// Provider drivers should validate any provider-specific config here and
 /// return [`SigmaError::ProviderConfig`] for invalid configuration.
 #[derive(Debug, Clone)]
-pub struct ProviderInit {
+pub struct ProviderInit<TConfig = ProviderConfigMap> {
     /// Configured provider instance id.
     pub id: ProviderId,
     /// Runtime provider kind that matched this constructor.
@@ -288,16 +333,23 @@ pub struct ProviderInit {
     /// Common provider configuration fields.
     pub common: ProviderCommonConfig,
     /// Provider-specific configuration from the nested `config` object.
-    pub config: ProviderConfigMap,
+    ///
+    /// Provider constructors registered with [`crate::submit_provider!`] receive
+    /// their typed configuration here. Raw `ProviderInit` values created from
+    /// [`ProviderInstanceConfig`] keep this as [`ProviderConfigMap`] until the
+    /// registration wrapper deserializes it.
+    pub config: TConfig,
 }
 
-impl ProviderInit {
+impl ProviderInit<ProviderConfigMap> {
     /// Deserializes the provider-specific `config` object into a typed value.
     ///
     /// Provider constructors should define their own configuration structs,
-    /// usually with Serde defaults and `deny_unknown_fields`, then call this
-    /// method before initializing runtime state. The error is mapped to
-    /// [`SigmaError::ProviderConfig`] with the provider instance id attached.
+    /// usually with Serde defaults and `deny_unknown_fields`. Provider
+    /// registrations created with [`crate::submit_provider!`] call this through
+    /// the generated wrapper before invoking the typed constructor. This method
+    /// remains available for tests and low-level integration code that starts
+    /// from raw [`ProviderConfigMap`] values.
     ///
     /// # Errors
     ///
@@ -314,9 +366,29 @@ impl ProviderInit {
             }
         })
     }
+
+    /// Converts this initialization value to one with typed provider config.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SigmaError::ProviderConfig`] when the nested `config` object
+    /// does not match `T`.
+    pub fn into_typed_config<T>(self) -> SigmaResult<ProviderInit<T>>
+    where
+        T: DeserializeOwned,
+    {
+        let config = self.deserialize_config()?;
+
+        Ok(ProviderInit {
+            id: self.id,
+            kind: self.kind,
+            common: self.common,
+            config,
+        })
+    }
 }
 
-impl From<ProviderInstanceConfig> for ProviderInit {
+impl From<ProviderInstanceConfig> for ProviderInit<ProviderConfigMap> {
     fn from(value: ProviderInstanceConfig) -> Self {
         Self {
             id: value.id,
@@ -630,55 +702,114 @@ pub(crate) fn deployment_model_info(deployment: Option<&ModelDeploymentConfig>) 
     deployment.map(|deployment| &deployment.model_info)
 }
 
-/// Registers a provider constructor in sigma's distributed inventory.
+/// Creates a typed provider registration value.
+///
+/// This expression macro is useful in tests or custom catalogs where callers
+/// want deterministic registration lists without using global inventory. The
+/// `config` type must implement [`serde::Deserialize`] and
+/// [`schemars::JsonSchema`]. sigma deserializes
+/// [`ProviderInstanceConfig::config`] into that type before calling the
+/// constructor, and uses the same type to generate the provider config schema.
+///
+/// ```ignore
+/// # use std::sync::Arc;
+/// # use schemars::JsonSchema;
+/// # use serde::Deserialize;
+/// # use sigma::{
+/// #     ProviderDriver, ProviderInit, ProviderKindStatic, SigmaResult, provider_registration,
+/// # };
+/// #[derive(Debug, Default, Deserialize, JsonSchema)]
+/// #[serde(default, deny_unknown_fields)]
+/// struct MyProviderConfig {
+///     timeout_ms: Option<u64>,
+/// }
+///
+/// fn from_config(
+///     init: ProviderInit<MyProviderConfig>,
+/// ) -> SigmaResult<Arc<dyn ProviderDriver>> {
+///     # let _ = init;
+///     # todo!()
+/// }
+///
+/// let registration = provider_registration! {
+///     kind: ProviderKindStatic::new("my-provider"),
+///     constructor: from_config,
+///     config: MyProviderConfig,
+/// };
+/// # let _ = registration;
+/// ```
+#[macro_export]
+macro_rules! provider_registration {
+    (kind: $kind:expr, constructor: $constructor:path, config: $config:ty $(,)?) => {{
+        fn __sigma_provider_constructor(
+            init: $crate::ProviderInit,
+        ) -> $crate::SigmaResult<::std::sync::Arc<dyn $crate::ProviderDriver>> {
+            let init = init.into_typed_config::<$config>()?;
+            $constructor(init)
+        }
+
+        fn __sigma_provider_instance_config_schema(
+            kind: $crate::ProviderKindStatic,
+        ) -> $crate::__private::serde_json::Value {
+            $crate::provider_instance_config_schema_for::<$config>(kind)
+        }
+
+        $crate::ProviderRegistration::__from_erased(
+            $kind,
+            __sigma_provider_constructor,
+            __sigma_provider_instance_config_schema,
+        )
+    }};
+}
+
+/// Registers a typed provider constructor in sigma's distributed inventory.
 ///
 /// Call this macro once per provider kind from the provider crate or module.
 /// The constructor is called once for each matching
 /// [`ProviderInstanceConfig`] during [`Client::build`](crate::Client::build).
+/// The provider-specific `config` type is also used to generate the nested
+/// provider configuration schema exposed by [`ProviderCatalog`].
 ///
 /// ```ignore
 /// use std::sync::Arc;
+/// use schemars::JsonSchema;
+/// use serde::Deserialize;
 /// use sigma::{
 ///     ProviderDriver, ProviderInit, ProviderKindStatic, SigmaResult, submit_provider,
 /// };
 ///
 /// struct MyProvider;
 ///
+/// #[derive(Debug, Default, Deserialize, JsonSchema)]
+/// #[serde(default, deny_unknown_fields)]
+/// struct MyProviderConfig {
+///     /// Provider-specific request timeout in milliseconds.
+///     timeout_ms: Option<u64>,
+/// }
+///
 /// impl MyProvider {
-///     fn from_config(init: ProviderInit) -> SigmaResult<Arc<dyn ProviderDriver>> {
+///     fn from_config(
+///         init: ProviderInit<MyProviderConfig>,
+///     ) -> SigmaResult<Arc<dyn ProviderDriver>> {
 ///         // Validate init.config, credentials, and endpoint overrides here.
 ///         todo!()
 ///     }
 /// }
 ///
-/// fn my_provider_config_schema() -> serde_json::Value {
-///     serde_json::json!({
-///         "type": "object",
-///         "additionalProperties": false,
-///         "properties": {
-///             "timeout_ms": {
-///                 "type": "integer",
-///                 "minimum": 1,
-///                 "description": "Provider-specific request timeout in milliseconds."
-///             }
-///         }
-///     })
-/// }
-///
 /// submit_provider! {
 ///     kind: ProviderKindStatic::new("my-provider"),
 ///     constructor: MyProvider::from_config,
-///     config_schema: my_provider_config_schema,
+///     config: MyProviderConfig,
 /// }
 /// ```
 #[macro_export]
 macro_rules! submit_provider {
-    (kind: $kind:expr, constructor: $constructor:path, config_schema: $config_schema:path $(,)?) => {
+    (kind: $kind:expr, constructor: $constructor:path, config: $config:ty $(,)?) => {
         $crate::inventory::submit! {
-            $crate::ProviderRegistration {
+            $crate::provider_registration! {
                 kind: $kind,
                 constructor: $constructor,
-                config_schema: $config_schema,
+                config: $config,
             }
         }
     };

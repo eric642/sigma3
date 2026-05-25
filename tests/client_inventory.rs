@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use bytes::Bytes;
 use futures_util::StreamExt;
 use http::{HeaderMap, HeaderValue, Method, StatusCode};
+use schemars::JsonSchema;
 use serde::ser::{SerializeMap, Serializer};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -19,9 +20,9 @@ use sigma::{
     ChatParamModelConfig, ChatParameterMap, ChatStream, Client, ClientConfig,
     ModelDeploymentConfig, ModelName, ModelRef, ParamPolicy, ProviderByteStream, ProviderCatalog,
     ProviderCommonConfig, ProviderConfigMap, ProviderDriver, ProviderEndpoint, ProviderId,
-    ProviderInit, ProviderInstanceConfig, ProviderKind, ProviderKindStatic, ProviderRegistration,
-    ProviderRequest, ProviderResponse, SecretString, SigmaError, SigmaResult,
-    SignedProviderRequest, StreamBehavior, submit_provider,
+    ProviderInit, ProviderInstanceConfig, ProviderKind, ProviderKindStatic, ProviderRequest,
+    ProviderResponse, SecretString, SigmaError, SigmaResult, SignedProviderRequest, StreamBehavior,
+    provider_registration, submit_provider,
 };
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request as WiremockRequest, ResponseTemplate};
@@ -55,50 +56,41 @@ struct FakeProvider {
     chat: FakeChatAdapter,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 struct FakeProviderConfig {
+    #[serde(default = "default_stream_behavior")]
     stream_behavior: String,
+    #[serde(default = "default_stream_transform")]
     stream_transform: String,
+    #[serde(default = "default_request_body")]
     request_body: String,
 }
 
 impl Default for FakeProviderConfig {
     fn default() -> Self {
         Self {
-            stream_behavior: "native".to_string(),
-            stream_transform: "json".to_string(),
-            request_body: "json".to_string(),
+            stream_behavior: default_stream_behavior(),
+            stream_transform: default_stream_transform(),
+            request_body: default_request_body(),
         }
     }
 }
 
-fn fake_provider_config_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-            "stream_behavior": {
-                "type": "string",
-                "enum": ["native", "fake"],
-                "default": "native"
-            },
-            "stream_transform": {
-                "type": "string",
-                "enum": ["json", "raw_text"],
-                "default": "json"
-            },
-            "request_body": {
-                "type": "string",
-                "enum": ["json", "raw_text"],
-                "default": "json"
-            }
-        }
-    })
+fn default_stream_behavior() -> String {
+    "native".to_string()
+}
+
+fn default_stream_transform() -> String {
+    "json".to_string()
+}
+
+fn default_request_body() -> String {
+    "json".to_string()
 }
 
 impl FakeProvider {
-    fn from_config(init: ProviderInit) -> SigmaResult<Arc<dyn ProviderDriver>> {
+    fn from_config(init: ProviderInit<FakeProviderConfig>) -> SigmaResult<Arc<dyn ProviderDriver>> {
         let base_url = init
             .common
             .api_base
@@ -107,7 +99,7 @@ impl FakeProvider {
                 provider: Some(init.id.clone()),
                 message: "fake provider requires api_base".to_string(),
             })?;
-        let config: FakeProviderConfig = init.deserialize_config()?;
+        let config = init.config;
 
         let stream_behavior = match config.stream_behavior.as_str() {
             "fake" => StreamBehavior::fake_from_response(),
@@ -145,7 +137,7 @@ impl ProviderDriver for FakeProvider {
 submit_provider! {
     kind: ProviderKindStatic::new("fake-chat"),
     constructor: FakeProvider::from_config,
-    config_schema: fake_provider_config_schema,
+    config: FakeProviderConfig,
 }
 
 struct FakeChatAdapter {
@@ -716,7 +708,7 @@ fn provider_init_deserialize_config_rejects_unknown_provider_config_fields() {
         })),
     });
 
-    let err = match FakeProvider::from_config(init) {
+    let err = match init.into_typed_config::<FakeProviderConfig>() {
         Ok(_) => panic!("expected provider config error"),
         Err(err) => err,
     };
@@ -772,36 +764,37 @@ fn client_with_chat_params(
     .unwrap()
 }
 
-fn duplicate_constructor(_init: ProviderInit) -> SigmaResult<Arc<dyn ProviderDriver>> {
+fn duplicate_constructor<TConfig>(
+    _init: ProviderInit<TConfig>,
+) -> SigmaResult<Arc<dyn ProviderDriver>> {
     unreachable!("duplicate registration detection should not call constructors")
 }
 
-fn duplicate_config_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false
-    })
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+struct DuplicateConfig {}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+#[allow(dead_code)]
+struct AlphaConfig {
+    #[serde(default)]
+    feature: bool,
+    #[serde(default)]
+    mode: AlphaMode,
 }
 
-fn alpha_config_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-            "feature": {
-                "type": "boolean",
-                "default": false
-            }
-        }
-    })
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum AlphaMode {
+    #[default]
+    Standard,
+    Strict,
 }
 
-fn zeta_config_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false
-    })
-}
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+struct ZetaConfig {}
 
 #[test]
 fn catalog_from_inventory_collects_fake_provider_registration() {
@@ -813,15 +806,15 @@ fn catalog_from_inventory_collects_fake_provider_registration() {
 #[test]
 fn catalog_collects_sorted_provider_instance_config_schemas() {
     let catalog = ProviderCatalog::from_registrations([
-        ProviderRegistration {
+        provider_registration! {
             kind: ProviderKindStatic::new("zeta"),
             constructor: duplicate_constructor,
-            config_schema: zeta_config_schema,
+            config: ZetaConfig,
         },
-        ProviderRegistration {
+        provider_registration! {
             kind: ProviderKindStatic::new("alpha"),
             constructor: duplicate_constructor,
-            config_schema: alpha_config_schema,
+            config: AlphaConfig,
         },
     ])
     .unwrap();
@@ -843,20 +836,28 @@ fn catalog_collects_sorted_provider_instance_config_schemas() {
         schemas[0].schema["properties"]["config"]["properties"]["feature"]["type"],
         "boolean"
     );
+    assert_eq!(
+        schemas[0].schema["properties"]["config"]["properties"]["feature"]["default"],
+        false
+    );
+    assert_eq!(
+        schemas[0].schema["properties"]["config"]["properties"]["mode"]["enum"],
+        json!(["standard", "strict"])
+    );
 }
 
 #[test]
 fn catalog_from_registrations_rejects_duplicate_kind() {
     let registrations = [
-        ProviderRegistration {
+        provider_registration! {
             kind: ProviderKindStatic::new("duplicate"),
             constructor: duplicate_constructor,
-            config_schema: duplicate_config_schema,
+            config: DuplicateConfig,
         },
-        ProviderRegistration {
+        provider_registration! {
             kind: ProviderKindStatic::new("duplicate"),
             constructor: duplicate_constructor,
-            config_schema: duplicate_config_schema,
+            config: DuplicateConfig,
         },
     ];
 
