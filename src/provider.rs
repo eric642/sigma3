@@ -186,7 +186,90 @@ fn provider_instance_config_schema(kind: ProviderKindStatic, config_schema: Valu
                 "default": {},
                 "description": "Static headers made available to the provider constructor."
             },
+            "chat_params": chat_param_config_schema(),
             "config": config_schema
+        }
+    })
+}
+
+fn chat_param_config_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "default": {},
+        "description": "Common chat parameter support, allow, drop, rename, and per-provider-model override rules.",
+        "properties": {
+            "policy": {
+                "type": "string",
+                "enum": ["reject_unsupported", "drop_unsupported"],
+                "default": "reject_unsupported",
+                "description": "How sigma handles parameters outside the resolved provider support set."
+            },
+            "supported": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Complete OpenAI-compatible parameter support set. When omitted, the provider adapter default is used."
+            },
+            "allow": {
+                "type": "array",
+                "items": {"type": "string"},
+                "default": [],
+                "description": "Additional parameter names accepted as-is."
+            },
+            "drop": {
+                "type": "array",
+                "items": {"type": "string"},
+                "default": [],
+                "description": "Top-level parameter names or nested paths to remove before sending the provider request."
+            },
+            "rename": {
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+                "description": "Top-level source-to-target field renames applied after unsupported-parameter handling."
+            },
+            "models": {
+                "type": "object",
+                "additionalProperties": chat_param_model_config_schema(),
+                "default": {},
+                "description": "Exact provider-native model names mapped to model-specific parameter rules."
+            }
+        }
+    })
+}
+
+fn chat_param_model_config_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "default": {},
+        "properties": {
+            "policy": {
+                "type": "string",
+                "enum": ["reject_unsupported", "drop_unsupported"],
+                "description": "Model-specific unsupported-parameter policy."
+            },
+            "supported": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Complete support set for this provider-native model."
+            },
+            "allow": {
+                "type": "array",
+                "items": {"type": "string"},
+                "default": [],
+                "description": "Additional accepted parameter names for this provider-native model."
+            },
+            "drop": {
+                "type": "array",
+                "items": {"type": "string"},
+                "default": [],
+                "description": "Top-level parameter names or nested paths to remove for this model."
+            },
+            "rename": {
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+                "description": "Top-level source-to-target field renames for this model."
+            }
         }
     })
 }
@@ -424,8 +507,8 @@ impl Default for StreamBehavior {
 pub trait ChatCompletionAdapter: Send + Sync {
     /// Returns OpenAI-compatible parameter names this provider accepts.
     ///
-    /// sigma uses this list with [`crate::ParamPolicy`] before calling
-    /// [`ChatCompletionAdapter::map_openai_params`].
+    /// sigma combines this list with [`crate::ProviderCommonConfig::chat_params`]
+    /// before calling [`ChatCompletionAdapter::map_openai_params`].
     fn supported_openai_params(&self) -> Vec<&'static str>;
 
     /// Translates OpenAI-compatible chat messages into provider-specific JSON.

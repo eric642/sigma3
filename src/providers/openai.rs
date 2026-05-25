@@ -79,15 +79,9 @@ impl OpenAiProvider {
     }
 
     fn from_compatible_config(init: ProviderInit) -> SigmaResult<Arc<dyn ProviderDriver>> {
-        let config: OpenAiCompatibleConfig = init.deserialize_config()?;
+        let _config: OpenAiCompatibleConfig = init.deserialize_config()?;
 
-        Self::from_config(
-            init,
-            OpenAiFlavor::Compatible {
-                map_max_completion_tokens_to_max_tokens: config
-                    .map_max_completion_tokens_to_max_tokens,
-            },
-        )
+        Self::from_config(init, OpenAiFlavor::Compatible)
     }
 
     fn from_config(
@@ -142,26 +136,14 @@ impl ProviderDriver for OpenAiProvider {
 #[serde(default, deny_unknown_fields)]
 struct OpenAiConfig {}
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-struct OpenAiCompatibleConfig {
-    map_max_completion_tokens_to_max_tokens: bool,
-}
-
-impl Default for OpenAiCompatibleConfig {
-    fn default() -> Self {
-        Self {
-            map_max_completion_tokens_to_max_tokens: true,
-        }
-    }
-}
+struct OpenAiCompatibleConfig {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpenAiFlavor {
     OpenAi,
-    Compatible {
-        map_max_completion_tokens_to_max_tokens: bool,
-    },
+    Compatible,
 }
 
 impl OpenAiFlavor {
@@ -170,16 +152,7 @@ impl OpenAiFlavor {
     }
 
     fn sanitizes_usage(self) -> bool {
-        matches!(self, Self::Compatible { .. })
-    }
-
-    fn maps_max_completion_tokens_to_max_tokens(self) -> bool {
-        matches!(
-            self,
-            Self::Compatible {
-                map_max_completion_tokens_to_max_tokens: true
-            }
-        )
+        matches!(self, Self::Compatible)
     }
 }
 
@@ -265,14 +238,7 @@ impl ChatCompletionAdapter for OpenAiChatAdapter {
         })
     }
 
-    fn map_openai_params(&self, mut params: ChatParameterMap) -> SigmaResult<ChatParameterMap> {
-        if self.flavor.maps_max_completion_tokens_to_max_tokens()
-            && params.contains_key("max_completion_tokens")
-            && let Some(value) = params.remove("max_completion_tokens")
-        {
-            params.insert("max_tokens".to_string(), value);
-        }
-
+    fn map_openai_params(&self, params: ChatParameterMap) -> SigmaResult<ChatParameterMap> {
         Ok(params)
     }
 
@@ -529,7 +495,7 @@ fn resolve_api_base(init: &ProviderInit, flavor: OpenAiFlavor) -> SigmaResult<St
             .or_else(|| non_empty_env("OPENAI_BASE_URL"))
             .or_else(|| non_empty_env("OPENAI_API_BASE"))
             .unwrap_or_else(|| OPENAI_DEFAULT_BASE_URL.to_string())),
-        OpenAiFlavor::Compatible { .. } => init
+        OpenAiFlavor::Compatible => init
             .common
             .api_base
             .clone()
@@ -545,7 +511,7 @@ fn resolve_api_base(init: &ProviderInit, flavor: OpenAiFlavor) -> SigmaResult<St
 fn resolve_api_key(api_key: Option<SecretString>, flavor: OpenAiFlavor) -> Option<SecretString> {
     api_key.or_else(|| match flavor {
         OpenAiFlavor::OpenAi => non_empty_env("OPENAI_API_KEY").map(SecretString::from),
-        OpenAiFlavor::Compatible { .. } => non_empty_env("OPENAI_COMPATIBLE_API_KEY")
+        OpenAiFlavor::Compatible => non_empty_env("OPENAI_COMPATIBLE_API_KEY")
             .or_else(|| non_empty_env("OPENAI_LIKE_API_KEY"))
             .map(SecretString::from),
     })
@@ -684,13 +650,7 @@ fn openai_compatible_config_schema() -> Value {
         "type": "object",
         "additionalProperties": false,
         "default": {},
-        "properties": {
-            "map_max_completion_tokens_to_max_tokens": {
-                "type": "boolean",
-                "default": true,
-                "description": "When true, maps OpenAI max_completion_tokens to legacy max_tokens for compatible endpoints."
-            }
-        }
+        "description": "The built-in OpenAI-compatible provider does not require provider-specific config. Use top-level chat_params.rename for field renames such as max_completion_tokens to max_tokens."
     })
 }
 

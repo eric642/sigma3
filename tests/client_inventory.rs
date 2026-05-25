@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use bytes::Bytes;
@@ -15,12 +15,13 @@ use sigma::types::chat::{
     CreateChatCompletionStreamResponse,
 };
 use sigma::{
-    ChatAdapterContext, ChatAdapterRequest, ChatCompletionAdapter, ChatParameterMap, ChatStream,
-    Client, ClientConfig, ModelDeploymentConfig, ModelName, ModelRef, ParamPolicy,
-    ProviderByteStream, ProviderCatalog, ProviderCommonConfig, ProviderConfigMap, ProviderDriver,
-    ProviderEndpoint, ProviderId, ProviderInit, ProviderInstanceConfig, ProviderKind,
-    ProviderKindStatic, ProviderRegistration, ProviderRequest, ProviderResponse, SecretString,
-    SigmaError, SigmaResult, SignedProviderRequest, StreamBehavior, submit_provider,
+    ChatAdapterContext, ChatAdapterRequest, ChatCompletionAdapter, ChatParamConfig,
+    ChatParamModelConfig, ChatParameterMap, ChatStream, Client, ClientConfig,
+    ModelDeploymentConfig, ModelName, ModelRef, ParamPolicy, ProviderByteStream, ProviderCatalog,
+    ProviderCommonConfig, ProviderConfigMap, ProviderDriver, ProviderEndpoint, ProviderId,
+    ProviderInit, ProviderInstanceConfig, ProviderKind, ProviderKindStatic, ProviderRegistration,
+    ProviderRequest, ProviderResponse, SecretString, SigmaError, SigmaResult,
+    SignedProviderRequest, StreamBehavior, submit_provider,
 };
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request as WiremockRequest, ResponseTemplate};
@@ -592,6 +593,23 @@ fn config(
     provider_config: Value,
     param_policy: ParamPolicy,
 ) -> ClientConfig {
+    config_with_chat_params(
+        provider_id,
+        api_base,
+        provider_config,
+        ChatParamConfig {
+            policy: Some(param_policy),
+            ..ChatParamConfig::default()
+        },
+    )
+}
+
+fn config_with_chat_params(
+    provider_id: &str,
+    api_base: &str,
+    provider_config: Value,
+    chat_params: ChatParamConfig,
+) -> ClientConfig {
     ClientConfig {
         providers: vec![ProviderInstanceConfig {
             id: provider_id.into(),
@@ -600,6 +618,7 @@ fn config(
                 api_base: Some(api_base.to_string()),
                 api_key: None,
                 headers: HashMap::new(),
+                chat_params,
             },
             config: provider_config_map(provider_config),
         }],
@@ -612,7 +631,6 @@ fn config(
             model_info: Value::Null,
         }],
         default_model: None,
-        param_policy,
     }
 }
 
@@ -691,6 +709,7 @@ fn provider_init_deserialize_config_rejects_unknown_provider_config_fields() {
             api_base: Some("http://localhost:8080/v1".to_string()),
             api_key: None,
             headers: HashMap::new(),
+            chat_params: ChatParamConfig::default(),
         },
         config: provider_config_map(json!({
             "unknown": true
@@ -733,6 +752,22 @@ fn client(
         &server.uri(),
         provider_config,
         param_policy,
+    ))
+    .unwrap()
+}
+
+fn client_with_chat_params(
+    provider_id: &str,
+    server: &MockServer,
+    provider_config: Value,
+    chat_params: ChatParamConfig,
+) -> Client {
+    clear_events(provider_id);
+    Client::build(config_with_chat_params(
+        provider_id,
+        &server.uri(),
+        provider_config,
+        chat_params,
     ))
     .unwrap()
 }
@@ -1056,6 +1091,189 @@ async fn create_drops_unsupported_params_when_policy_drops() {
     client.chat().create(&request).await.unwrap();
 
     assert!(last_body(&server).await.get("n").is_none());
+}
+
+#[tokio::test]
+async fn create_allows_provider_configured_params() {
+    let server = MockServer::start().await;
+    mount_chat_response(&server, "http.execute", "ok").await;
+    let client = client_with_chat_params(
+        "p-allow",
+        &server,
+        Value::Null,
+        ChatParamConfig {
+            allow: vec!["n".to_string()],
+            ..ChatParamConfig::default()
+        },
+    );
+
+    let mut request = request(ModelRef::model("gpt-public"));
+    request.params.n = Some(2);
+    client.chat().create(&request).await.unwrap();
+
+    assert_eq!(last_body(&server).await["n"], 2);
+}
+
+#[tokio::test]
+async fn create_drops_provider_configured_top_level_params_before_validation() {
+    let server = MockServer::start().await;
+    mount_chat_response(&server, "http.execute", "ok").await;
+    let client = client_with_chat_params(
+        "p-drop-top",
+        &server,
+        Value::Null,
+        ChatParamConfig {
+            drop: vec!["n".to_string()],
+            ..ChatParamConfig::default()
+        },
+    );
+
+    let mut request = request(ModelRef::model("gpt-public"));
+    request.params.n = Some(2);
+    client.chat().create(&request).await.unwrap();
+
+    assert!(last_body(&server).await.get("n").is_none());
+}
+
+#[tokio::test]
+async fn create_renames_provider_configured_params() {
+    let server = MockServer::start().await;
+    mount_chat_response(&server, "http.execute", "ok").await;
+    let client = client_with_chat_params(
+        "p-rename",
+        &server,
+        Value::Null,
+        ChatParamConfig {
+            rename: Some(BTreeMap::from([(
+                "max_completion_tokens".to_string(),
+                "max_tokens".to_string(),
+            )])),
+            ..ChatParamConfig::default()
+        },
+    );
+
+    let mut request = request(ModelRef::model("gpt-public"));
+    request.params.max_completion_tokens = Some(42);
+    client.chat().create(&request).await.unwrap();
+
+    let body = last_body(&server).await;
+    assert_eq!(body["max_tokens"], 42);
+    assert!(body.get("max_completion_tokens").is_none());
+}
+
+#[tokio::test]
+async fn create_applies_nested_provider_drop_after_mapping() {
+    let server = MockServer::start().await;
+    mount_chat_response(&server, "http.execute", "ok").await;
+    let mut config = config_with_chat_params(
+        "p-drop-nested",
+        &server.uri(),
+        Value::Null,
+        ChatParamConfig {
+            allow: vec!["tools".to_string()],
+            drop: vec!["tools[*].function.parameters.examples".to_string()],
+            ..ChatParamConfig::default()
+        },
+    );
+    config.deployments[0].defaults.insert(
+        "tools".to_string(),
+        json!([{
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "parameters": {
+                    "type": "object",
+                    "examples": [{"city": "Paris"}]
+                }
+            }
+        }]),
+    );
+    let client = Client::build(config).unwrap();
+
+    client
+        .chat()
+        .create(&request(ModelRef::model("gpt-public")))
+        .await
+        .unwrap();
+
+    let parameters = &last_body(&server).await["tools"][0]["function"]["parameters"];
+    assert_eq!(parameters["type"], "object");
+    assert!(parameters.get("examples").is_none());
+}
+
+#[tokio::test]
+async fn create_uses_provider_model_specific_param_rules() {
+    let server = MockServer::start().await;
+    mount_chat_response(&server, "http.execute", "ok").await;
+    let mut config = config_with_chat_params(
+        "p-model-rules",
+        &server.uri(),
+        Value::Null,
+        ChatParamConfig {
+            models: BTreeMap::from([(
+                ModelName::from("provider-gpt"),
+                ChatParamModelConfig {
+                    allow: vec!["n".to_string()],
+                    ..ChatParamModelConfig::default()
+                },
+            )]),
+            ..ChatParamConfig::default()
+        },
+    );
+    config.deployments.push(ModelDeploymentConfig {
+        id: "dep-strict".into(),
+        public_model: "gpt-strict".into(),
+        provider: "p-model-rules".into(),
+        provider_model: "provider-strict".into(),
+        defaults: serde_json::Map::new(),
+        model_info: Value::Null,
+    });
+    let client = Client::build(config).unwrap();
+
+    let mut allowed = request(ModelRef::model("gpt-public"));
+    allowed.params.n = Some(2);
+    client.chat().create(&allowed).await.unwrap();
+
+    let mut rejected = request(ModelRef::model("gpt-strict"));
+    rejected.params.n = Some(2);
+    let err = client.chat().create(&rejected).await.unwrap_err();
+
+    assert!(matches!(
+        err,
+        SigmaError::UnsupportedParams { params, .. } if params == vec!["n"]
+    ));
+}
+
+#[tokio::test]
+async fn provider_model_direct_routing_uses_provider_model_param_rules() {
+    let server = MockServer::start().await;
+    mount_chat_response(&server, "http.execute", "ok").await;
+    let client = client_with_chat_params(
+        "p-direct-model-rules",
+        &server,
+        Value::Null,
+        ChatParamConfig {
+            models: BTreeMap::from([(
+                ModelName::from("direct-model"),
+                ChatParamModelConfig {
+                    allow: vec!["n".to_string()],
+                    ..ChatParamModelConfig::default()
+                },
+            )]),
+            ..ChatParamConfig::default()
+        },
+    );
+
+    let mut request = request(ModelRef::provider_model(
+        ProviderId::from("p-direct-model-rules"),
+        "direct-model",
+    ));
+    request.params.n = Some(2);
+    client.chat().create(&request).await.unwrap();
+
+    let body = last_body(&server).await;
+    assert_eq!(body["model"], "direct-model");
+    assert_eq!(body["n"], 2);
 }
 
 #[tokio::test]

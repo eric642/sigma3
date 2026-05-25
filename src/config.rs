@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -83,13 +83,97 @@ pub enum ParamPolicy {
     DropUnsupported,
 }
 
+/// Provider-level chat parameter handling rules.
+///
+/// These rules are applied by sigma after deployment defaults and request
+/// parameters are merged, but before provider message translation and request
+/// transformation. They let one configured provider instance describe which
+/// OpenAI-compatible parameters it accepts, which extra parameters are allowed,
+/// which parameters should be removed, and which top-level fields should be
+/// renamed before reaching the provider adapter.
+///
+/// Model-specific entries in [`ChatParamConfig::models`] are matched against
+/// the routed provider-native model name, not the public model name. This keeps
+/// deployment routing and [`crate::ModelRef::provider_model`] direct routing
+/// consistent.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatParamConfig {
+    /// Policy for parameters not accepted by the resolved support set.
+    ///
+    /// When this is `None`, sigma defaults to
+    /// [`ParamPolicy::RejectUnsupported`]. Model-specific rules may override
+    /// this value for one provider-native model.
+    #[serde(default)]
+    pub policy: Option<ParamPolicy>,
+    /// Complete OpenAI-compatible support set for this provider instance.
+    ///
+    /// When set, this replaces the adapter's built-in support list. Use
+    /// [`ChatParamConfig::allow`] to append provider-specific parameters
+    /// without replacing the adapter defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supported: Option<Vec<String>>,
+    /// Additional parameter names accepted as-is.
+    ///
+    /// Only parameters actually present in a request or deployment default are
+    /// forwarded; entries in this list do not synthesize missing fields.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow: Vec<String>,
+    /// Parameter names or nested paths to remove before sending a provider
+    /// request.
+    ///
+    /// Top-level names such as `"logit_bias"` are removed before unsupported
+    /// parameter validation. Nested paths such as
+    /// `"tools[*].function.parameters.examples"` are removed after field
+    /// renaming, using dot notation plus `[*]` or `[0]` array traversal.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drop: Vec<String>,
+    /// Top-level field renames applied after unsupported parameter handling.
+    ///
+    /// The map key is the OpenAI-compatible source field and the value is the
+    /// provider-native target field. `None` means no configured rename. An empty
+    /// map is allowed and explicitly clears inherited rename rules in
+    /// model-specific configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rename: Option<BTreeMap<String, String>>,
+    /// Provider-native model-specific parameter rules.
+    ///
+    /// Keys are exact routed provider model names. A matching entry is applied
+    /// after the provider-level rules.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub models: BTreeMap<ModelName, ChatParamModelConfig>,
+}
+
+/// Provider-native model-specific chat parameter handling rules.
+///
+/// This has the same behavior as [`ChatParamConfig`] except it cannot contain
+/// nested model rules. `supported` and `rename` use `Option` so a model can
+/// either inherit provider-level values or replace them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatParamModelConfig {
+    /// Model-specific unsupported-parameter policy.
+    #[serde(default)]
+    pub policy: Option<ParamPolicy>,
+    /// Complete support set for this provider-native model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supported: Option<Vec<String>>,
+    /// Additional accepted parameter names for this model.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow: Vec<String>,
+    /// Parameter names or nested paths to remove for this model.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drop: Vec<String>,
+    /// Top-level field renames for this model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rename: Option<BTreeMap<String, String>>,
+}
+
 /// Common configuration fields available to every provider instance.
 ///
 /// These fields cover the endpoint, credentials, and static HTTP headers used
 /// by most providers. They are serialized at the top level of
 /// [`ProviderInstanceConfig`] with Serde `flatten`, so JSON, TOML, and YAML
-/// configuration files use `api_base`, `api_key`, and `headers` beside `id`
-/// and `kind`. Provider-specific settings belong in
+/// configuration files use `api_base`, `api_key`, `headers`, and
+/// `chat_params` beside `id` and `kind`. Provider-specific settings belong in
 /// [`ProviderInstanceConfig::config`].
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProviderCommonConfig {
@@ -113,6 +197,14 @@ pub struct ProviderCommonConfig {
     /// syntax can vary by protocol.
     #[serde(default)]
     pub headers: HashMap<String, String>,
+    /// Chat parameter handling rules for this provider instance.
+    ///
+    /// These common rules are interpreted by sigma's standard chat pipeline
+    /// before the provider adapter builds the HTTP request. Custom chat
+    /// providers that bypass the standard adapter are responsible for applying
+    /// any equivalent behavior themselves.
+    #[serde(default)]
+    pub chat_params: ChatParamConfig,
 }
 
 /// Configuration for one initialized provider instance.
@@ -139,10 +231,9 @@ pub struct ProviderInstanceConfig {
     ///
     /// Provider crates should document this object through the
     /// `config_schema` function registered with [`crate::submit_provider!`] and
-    /// deserialize it with [`crate::ProviderInit::deserialize_config`]. The
-    /// built-in `openai-compatible` provider accepts
-    /// `map_max_completion_tokens_to_max_tokens: bool`, defaulting to `true`,
-    /// for endpoints that expect legacy `max_tokens`.
+    /// deserialize it with [`crate::ProviderInit::deserialize_config`]. Common
+    /// chat parameter support, dropping, allowing, and renaming rules belong in
+    /// [`ProviderCommonConfig::chat_params`].
     #[serde(default)]
     pub config: ProviderConfigMap,
 }
@@ -177,7 +268,7 @@ pub struct ModelDeploymentConfig {
 /// `deployments` define routing from public model names to provider instances.
 /// `default_model` is used when a request's model is the default empty
 /// [`crate::ModelRef`].
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ClientConfig {
     /// Provider instances to initialize during [`crate::Client::build`].
     #[serde(default)]
@@ -187,18 +278,4 @@ pub struct ClientConfig {
     pub deployments: Vec<ModelDeploymentConfig>,
     /// Optional public model name used by empty/default request model refs.
     pub default_model: Option<ModelName>,
-    /// Behavior for unsupported OpenAI-compatible request parameters.
-    #[serde(default)]
-    pub param_policy: ParamPolicy,
-}
-
-impl Default for ClientConfig {
-    fn default() -> Self {
-        Self {
-            providers: Vec::new(),
-            deployments: Vec::new(),
-            default_model: None,
-            param_policy: ParamPolicy::RejectUnsupported,
-        }
-    }
 }

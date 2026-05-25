@@ -8,9 +8,8 @@
 //!
 //! ```no_run
 //! use sigma::{
-//!     Client, ClientConfig, ModelDeploymentConfig, ModelName, ParamPolicy,
-//!     ProviderCommonConfig, ProviderConfigMap, ProviderId, ProviderInstanceConfig,
-//!     ProviderKind,
+//!     Client, ClientConfig, ModelDeploymentConfig, ModelName, ProviderCommonConfig,
+//!     ProviderConfigMap, ProviderId, ProviderInstanceConfig, ProviderKind,
 //! };
 //!
 //! # fn build_client() -> sigma::SigmaResult<Client> {
@@ -30,7 +29,6 @@
 //!         model_info: serde_json::Value::Null,
 //!     }],
 //!     default_model: Some(ModelName::from("gpt-4o")),
-//!     param_policy: ParamPolicy::RejectUnsupported,
 //! };
 //!
 //! let client = Client::build(config)?;

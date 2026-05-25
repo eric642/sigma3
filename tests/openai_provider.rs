@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use futures_util::StreamExt;
 use http::StatusCode;
@@ -19,8 +19,8 @@ use sigma::types::shared::{
     FunctionName, FunctionObject, ImageUrl, ResponseFormat, ResponseFormatJsonSchema,
 };
 use sigma::{
-    ChatParameterMap, Client, ClientConfig, ModelDeploymentConfig, ModelName, ModelRef,
-    ParamPolicy, ProviderCatalog, ProviderCommonConfig, ProviderConfigMap, ProviderId,
+    ChatParamConfig, ChatParameterMap, Client, ClientConfig, ModelDeploymentConfig, ModelName,
+    ModelRef, ProviderCatalog, ProviderCommonConfig, ProviderConfigMap, ProviderId,
     ProviderInstanceConfig, ProviderKind, SecretString, SigmaError,
 };
 use wiremock::matchers::{method, path};
@@ -42,6 +42,7 @@ fn openai_config(
                 api_base: api_base.into(),
                 api_key: api_key.into(),
                 headers,
+                chat_params: ChatParamConfig::default(),
             },
             config: provider_config_map(provider_config),
         }],
@@ -54,7 +55,6 @@ fn openai_config(
             model_info: Value::Null,
         }],
         default_model: None,
-        param_policy: ParamPolicy::RejectUnsupported,
     }
 }
 
@@ -175,9 +175,12 @@ fn catalog_from_inventory_exposes_openai_provider_config_schemas() {
         false
     );
     assert_eq!(
-        compatible.schema["properties"]["config"]["properties"]["map_max_completion_tokens_to_max_tokens"]
-            ["default"],
-        true
+        openai.schema["properties"]["chat_params"]["properties"]["policy"]["default"],
+        "reject_unsupported"
+    );
+    assert_eq!(
+        compatible.schema["properties"]["config"]["additionalProperties"],
+        false
     );
 }
 
@@ -808,7 +811,7 @@ async fn compatible_create_sends_provider_metadata_from_provider_override() {
 }
 
 #[tokio::test]
-async fn compatible_create_maps_max_completion_tokens_to_max_tokens_by_default() {
+async fn compatible_create_preserves_max_completion_tokens_by_default() {
     let server = MockServer::start().await;
     mount_json_response(
         &server,
@@ -831,12 +834,12 @@ async fn compatible_create_maps_max_completion_tokens_to_max_tokens_by_default()
     client.chat().create(&request).await.unwrap();
 
     let body = last_body(&server).await;
-    assert_eq!(body["max_tokens"], 42);
-    assert!(body.get("max_completion_tokens").is_none());
+    assert_eq!(body["max_completion_tokens"], 42);
+    assert!(body.get("max_tokens").is_none());
 }
 
 #[tokio::test]
-async fn compatible_create_preserves_max_completion_tokens_when_mapping_disabled() {
+async fn compatible_create_maps_max_completion_tokens_when_chat_params_rename_configured() {
     let server = MockServer::start().await;
     mount_json_response(
         &server,
@@ -844,25 +847,53 @@ async fn compatible_create_preserves_max_completion_tokens_when_mapping_disabled
         response_body("gpt-4o-mini", "ok"),
     )
     .await;
-    let client = Client::build(openai_config(
+    let mut config = openai_config(
         "openai-compatible",
         "compatible-tokens",
         Some(format!("{}/v1", server.uri())),
         Some(SecretString::from("token")),
         HashMap::new(),
-        json!({
-            "map_max_completion_tokens_to_max_tokens": false
-        }),
-    ))
-    .unwrap();
+        Value::Null,
+    );
+    config.providers[0].common.chat_params.rename = Some(BTreeMap::from([(
+        "max_completion_tokens".to_string(),
+        "max_tokens".to_string(),
+    )]));
+    let client = Client::build(config).unwrap();
     let mut request = request(ModelRef::model("gpt-public"));
     request.params.max_completion_tokens = Some(42);
 
     client.chat().create(&request).await.unwrap();
 
     let body = last_body(&server).await;
-    assert_eq!(body["max_completion_tokens"], 42);
-    assert!(body.get("max_tokens").is_none());
+    assert_eq!(body["max_tokens"], 42);
+    assert!(body.get("max_completion_tokens").is_none());
+}
+
+#[test]
+fn compatible_provider_rejects_legacy_token_mapping_config() {
+    let err = match Client::build(openai_config(
+        "openai-compatible",
+        "compatible-legacy-config",
+        Some("http://localhost:8080/v1".to_string()),
+        Some(SecretString::from("token")),
+        HashMap::new(),
+        json!({
+            "map_max_completion_tokens_to_max_tokens": false
+        }),
+    )) {
+        Ok(_) => panic!("expected provider config error"),
+        Err(err) => err,
+    };
+
+    assert!(matches!(
+        err,
+        SigmaError::ProviderConfig {
+            provider: Some(provider),
+            message
+        } if provider == "compatible-legacy-config"
+            && message.contains("unknown field")
+    ));
 }
 
 #[tokio::test]
