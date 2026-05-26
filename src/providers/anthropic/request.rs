@@ -1,6 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use http::{HeaderMap, HeaderName};
+use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 use crate::config::ChatParameterMap;
@@ -10,7 +11,7 @@ use crate::types::chat::{
     CacheControlType, ChatMessage, FilePart, ImagePart, ProviderContextBlock, ReasoningBlock,
     TextContent, ToolCall, ToolContent, ToolMessage, UserContent, UserContentPart,
 };
-use crate::types::shared::{AnthropicThinkingParam, AnthropicThinkingType, ResponseFormat};
+use crate::types::shared::ResponseFormat;
 use crate::{ModelName, ProviderId, SigmaError, SigmaResult};
 
 use super::{AnthropicChatAdapter, RESPONSE_FORMAT_TOOL_NAME};
@@ -51,6 +52,21 @@ fn insert_beta_value(beta_values: &mut BTreeSet<String>, value: &Value) {
 pub(super) struct TranslatedMessages {
     pub(super) messages: Vec<Value>,
     pub(super) system: Vec<Value>,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+struct AnthropicThinkingParam {
+    #[serde(rename = "type")]
+    r#type: AnthropicThinkingType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    budget_tokens: Option<u32>,
+}
+
+#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum AnthropicThinkingType {
+    Enabled,
+    Adaptive,
 }
 
 pub(super) fn map_token_params(params: &mut ChatParameterMap, default_max_tokens: u32) {

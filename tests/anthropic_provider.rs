@@ -8,7 +8,9 @@ use sigma::types::chat::{
     FinishReason, FunctionTool, ImagePart, NamedFunctionToolChoice, SystemMessage, TextContent,
     TextPart, ToolChoice, ToolDefinition, UserContent, UserContentPart, UserMessage,
 };
-use sigma::types::shared::{FunctionName, FunctionObject, ImageUrl, ResponseFormat};
+use sigma::types::shared::{
+    FunctionName, FunctionObject, ImageUrl, ReasoningEffort, ResponseFormat,
+};
 use sigma::{
     ChatParamConfig, ChatParameterMap, Client, ClientConfig, ModelDeploymentConfig, ModelName,
     ModelRef, ProviderCatalog, ProviderCommonConfig, ProviderConfigMap, ProviderId,
@@ -426,6 +428,34 @@ async fn anthropic_provider_options_output_format_overrides_portable_response_fo
 }
 
 #[tokio::test]
+async fn anthropic_create_maps_low_reasoning_effort_to_enabled_thinking_budget() {
+    let server = MockServer::start().await;
+    mount_anthropic_response(
+        &server,
+        anthropic_response(vec![json!({"type": "text", "text": "ok"})], "end_turn"),
+    )
+    .await;
+    let client = Client::build(anthropic_config(
+        "anthropic-reasoning",
+        Some(server.uri()),
+        Some(SecretString::from("sk-ant-test")),
+        HashMap::new(),
+        Value::Null,
+    ))
+    .unwrap();
+    let mut request = request(ModelRef::model("claude-public"));
+    request.params.reasoning_effort = Some(ReasoningEffort::Low);
+
+    client.chat().create(&request).await.unwrap();
+
+    let body = last_body(&server).await;
+    assert_eq!(
+        body["thinking"],
+        json!({"type": "enabled", "budget_tokens": 1024})
+    );
+}
+
+#[tokio::test]
 async fn anthropic_create_maps_tools_tool_choice_and_reverses_sanitized_tool_names() {
     let server = MockServer::start().await;
     mount_anthropic_response(
@@ -598,7 +628,7 @@ async fn anthropic_create_maps_response_format_reasoning_and_usage() {
     .unwrap();
     let mut request = request(ModelRef::model("claude-public"));
     request.params.response_format = Some(ResponseFormat::JsonObject);
-    request.params.reasoning_effort = Some(sigma::types::shared::ReasoningEffort::Low);
+    request.params.reasoning_effort = Some(ReasoningEffort::Low);
 
     let response = client.chat().create(&request).await.unwrap();
 

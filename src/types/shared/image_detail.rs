@@ -2,9 +2,8 @@ use serde::{Deserialize, Serialize};
 
 /// Requested media detail level for image, document, or video inputs.
 ///
-/// Providers interpret these hints according to their own model capabilities.
-/// For example, Gemini maps them to `mediaResolution` when the target model
-/// supports explicit media resolution controls.
+/// Providers interpret these hints according to their own model capabilities
+/// and may ignore or reject unsupported detail levels.
 #[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum ImageDetail {
