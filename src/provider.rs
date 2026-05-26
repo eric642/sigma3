@@ -15,8 +15,7 @@ use crate::provider_http::{
     ProviderByteStream, ProviderEndpoint, ProviderRequest, ProviderResponse, SignedProviderRequest,
 };
 use crate::types::chat::{
-    ChatChoiceStream, ChatCompletionRequestMessage, ChatCompletionStreamResponseDelta,
-    CreateChatCompletionRequest, CreateChatCompletionResponse, CreateChatCompletionStreamResponse,
+    AssistantDelta, ChatMessage, ChatRequest, ChatResponse, ChatStreamChoice, ChatStreamChunk,
 };
 use crate::{
     DeploymentId, ModelDeploymentConfig, ModelName, ProviderId, ProviderKind, ProviderKindStatic,
@@ -272,7 +271,7 @@ struct ChatParamConfigSchemaView {
     /// How sigma handles parameters outside the resolved provider support set.
     #[serde(default = "default_param_policy")]
     policy: ParamPolicy,
-    /// Complete OpenAI-compatible parameter support set. When omitted, the provider adapter default is used.
+    /// Complete semantic chat parameter support set. When omitted, the provider adapter default is used.
     #[serde(default)]
     #[schemars(!default)]
     supported: Vec<String>,
@@ -437,7 +436,7 @@ pub struct RoutedChatRequest<'a> {
     /// Provider-native model name to use.
     pub provider_model: &'a ModelName,
     /// Original chat completion request.
-    pub request: &'a CreateChatCompletionRequest,
+    pub request: &'a ChatRequest,
     /// Opaque model metadata from the selected deployment, when routing used one.
     pub model_info: Option<&'a Value>,
 }
@@ -452,10 +451,7 @@ pub struct RoutedChatRequest<'a> {
 #[async_trait]
 pub trait CustomChatProvider: Send + Sync {
     /// Creates one chat completion through provider-specific code.
-    async fn create(
-        &self,
-        request: RoutedChatRequest<'_>,
-    ) -> SigmaResult<CreateChatCompletionResponse>;
+    async fn create(&self, request: RoutedChatRequest<'_>) -> SigmaResult<ChatResponse>;
 
     /// Creates a streaming chat completion through provider-specific code.
     async fn create_stream(&self, request: RoutedChatRequest<'_>) -> SigmaResult<ChatStream>;
@@ -498,12 +494,12 @@ pub struct ChatAdapterContext<'a> {
 pub struct ChatAdapterRequest<'a> {
     /// Routing metadata for this adapter call.
     pub context: ChatAdapterContext<'a>,
-    /// Original OpenAI-compatible chat messages.
+    /// Original provider-neutral chat messages.
     ///
     /// Adapters convert these messages into provider-native JSON inside
     /// [`ChatCompletionAdapter::transform_request`], alongside parameter
     /// mapping and provider option handling.
-    pub messages: &'a [ChatCompletionRequestMessage],
+    pub messages: &'a [ChatMessage],
     /// Merged and policy-filtered chat parameters.
     pub params: ChatParameterMap,
     /// Provider-scoped request options for the selected provider.
@@ -519,9 +515,8 @@ pub struct ChatAdapterRequest<'a> {
     pub provider_options: Option<&'a ChatParameterMap>,
 }
 
-/// Stream of OpenAI-compatible chat completion chunks returned by sigma.
-pub type ChatStream =
-    Pin<Box<dyn Stream<Item = SigmaResult<CreateChatCompletionStreamResponse>> + Send + 'static>>;
+/// Stream of semantic chat chunks returned by sigma.
+pub type ChatStream = Pin<Box<dyn Stream<Item = SigmaResult<ChatStreamChunk>> + Send + 'static>>;
 
 /// Streaming strategy used by a chat adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -569,8 +564,8 @@ impl Default for StreamBehavior {
 ///
 /// The lifecycle for `create` is:
 ///
-/// 1. [`ChatCompletionAdapter::supported_openai_params`]
-/// 2. [`ChatCompletionAdapter::map_openai_params`]
+/// 1. [`ChatCompletionAdapter::supported_chat_params`]
+/// 2. [`ChatCompletionAdapter::map_chat_params`]
 /// 3. [`ChatCompletionAdapter::validate_environment`]
 /// 4. [`ChatCompletionAdapter::endpoint`]
 /// 5. [`ChatCompletionAdapter::transform_request`]
@@ -583,18 +578,18 @@ impl Default for StreamBehavior {
 /// `create_stream` follows the same preparation path. Native streams use
 /// [`ChatCompletionAdapter::transform_error_response`] for non-success HTTP
 /// statuses or [`ChatCompletionAdapter::transform_stream`] to convert
-/// successful provider bytes into OpenAI-compatible chunks. Fake streams use
+/// successful provider bytes into semantic chat chunks. Fake streams use
 /// [`ChatCompletionAdapter::transform_response`] and synthesize one chunk from
 /// the full success response.
 pub trait ChatCompletionAdapter: Send + Sync {
-    /// Returns OpenAI-compatible parameter names this provider accepts.
+    /// Returns semantic chat parameter names this provider accepts.
     ///
     /// sigma combines this list with [`crate::ProviderCommonConfig::chat_params`]
-    /// before calling [`ChatCompletionAdapter::map_openai_params`].
-    fn supported_openai_params(&self) -> Vec<&'static str>;
+    /// before calling [`ChatCompletionAdapter::map_chat_params`].
+    fn supported_chat_params(&self) -> Vec<&'static str>;
 
-    /// Maps OpenAI-compatible parameters to provider-specific parameters.
-    fn map_openai_params(&self, params: ChatParameterMap) -> SigmaResult<ChatParameterMap>;
+    /// Maps semantic chat parameters to provider-specific parameters.
+    fn map_chat_params(&self, params: ChatParameterMap) -> SigmaResult<ChatParameterMap>;
 
     /// Validates credentials or environment needed before each provider call.
     fn validate_environment(&self) -> SigmaResult<()>;
@@ -622,7 +617,7 @@ pub trait ChatCompletionAdapter: Send + Sync {
         &self,
         context: &ChatAdapterContext<'_>,
         response: ProviderResponse,
-    ) -> SigmaResult<CreateChatCompletionResponse>;
+    ) -> SigmaResult<ChatResponse>;
 
     /// Transforms a non-success provider HTTP response into a sigma error.
     ///
@@ -656,7 +651,7 @@ pub trait ChatCompletionAdapter: Send + Sync {
         }
     }
 
-    /// Transforms provider streaming bytes into chat completion chunks.
+    /// Transforms provider streaming bytes into semantic chat chunks.
     ///
     /// The returned stream may synchronously parse, filter, or reshape each raw
     /// provider byte frame. Network polling remains owned by sigma's HTTP
@@ -675,29 +670,25 @@ pub trait ChatCompletionAdapter: Send + Sync {
     }
 }
 
-pub(crate) fn response_to_stream_chunk(
-    response: CreateChatCompletionResponse,
-) -> CreateChatCompletionStreamResponse {
+pub(crate) fn response_to_stream_chunk(response: ChatResponse) -> ChatStreamChunk {
     let choices = response
         .choices
         .into_iter()
-        .map(|choice| ChatChoiceStream {
+        .map(|choice| ChatStreamChoice {
             index: choice.index,
-            delta: ChatCompletionStreamResponseDelta {
+            delta: AssistantDelta {
                 content: choice.message.content,
-                reasoning_content: choice.message.reasoning_content,
+                reasoning: choice.message.reasoning,
                 tool_calls: None,
                 role: Some(choice.message.role),
                 refusal: choice.message.refusal,
-                thinking_blocks: choice.message.thinking_blocks,
-                provider_specific_fields: choice.message.provider_specific_fields,
             },
             finish_reason: choice.finish_reason,
             logprobs: choice.logprobs,
         })
         .collect();
 
-    CreateChatCompletionStreamResponse {
+    ChatStreamChunk {
         id: response.id,
         choices,
         created: response.created,

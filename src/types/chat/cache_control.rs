@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 /// Cache-control configuration for prompt caching.
 ///
 /// Use this on content blocks for explicit cache breakpoints, or on
-/// [`crate::types::chat::CreateChatCompletionRequestParams::cache_control`] for
+/// [`crate::types::chat::ChatRequestParams::cache_control`] for
 /// request-level cache behavior. Providers decide how to translate this
 /// semantic control into their native request format, and may ignore it when
 /// unsupported.

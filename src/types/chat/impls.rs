@@ -1,269 +1,83 @@
-use std::fmt::Display;
-
 use crate::types::chat::{
-    ChatCompletionMessageCustomToolCall, ChatCompletionMessageToolCall,
-    ChatCompletionMessageToolCalls, ChatCompletionNamedToolChoice,
-    ChatCompletionRequestAssistantMessage, ChatCompletionRequestAssistantMessageContent,
-    ChatCompletionRequestDeveloperMessage, ChatCompletionRequestDeveloperMessageContent,
-    ChatCompletionRequestMessage, ChatCompletionRequestMessageContentPartAudio,
-    ChatCompletionRequestMessageContentPartImage, ChatCompletionRequestMessageContentPartText,
-    ChatCompletionRequestSystemMessage, ChatCompletionRequestSystemMessageContent,
-    ChatCompletionRequestToolMessage, ChatCompletionRequestToolMessageContent,
-    ChatCompletionRequestUserMessage, ChatCompletionRequestUserMessageContent,
-    ChatCompletionRequestUserMessageContentPart, ChatCompletionTool, ChatCompletionTools,
-    CustomToolChatCompletions, Role,
+    AudioPart, ChatMessage, CustomToolDefinition, FilePart, FunctionTool, ImagePart, SystemMessage,
+    TextContent, TextPart, ToolDefinition, UserContent, UserContentPart,
 };
 use crate::types::shared::{FunctionName, ImageUrl};
 
-// ---------- Message → ChatCompletionRequestMessage ----------
-
-impl From<ChatCompletionRequestUserMessage> for ChatCompletionRequestMessage {
-    fn from(value: ChatCompletionRequestUserMessage) -> Self {
-        Self::User(value)
-    }
-}
-impl From<ChatCompletionRequestSystemMessage> for ChatCompletionRequestMessage {
-    fn from(value: ChatCompletionRequestSystemMessage) -> Self {
-        Self::System(value)
-    }
-}
-impl From<ChatCompletionRequestDeveloperMessage> for ChatCompletionRequestMessage {
-    fn from(value: ChatCompletionRequestDeveloperMessage) -> Self {
-        Self::Developer(value)
-    }
-}
-impl From<ChatCompletionRequestAssistantMessage> for ChatCompletionRequestMessage {
-    fn from(value: ChatCompletionRequestAssistantMessage) -> Self {
-        Self::Assistant(value)
-    }
-}
-impl From<ChatCompletionRequestToolMessage> for ChatCompletionRequestMessage {
-    fn from(value: ChatCompletionRequestToolMessage) -> Self {
-        Self::Tool(value)
+impl From<&str> for TextPart {
+    fn from(value: &str) -> Self {
+        Self::new(value)
     }
 }
 
-// ---------- Content → Message ----------
+impl From<String> for TextPart {
+    fn from(value: String) -> Self {
+        Self::new(value)
+    }
+}
 
-impl From<ChatCompletionRequestUserMessageContent> for ChatCompletionRequestUserMessage {
-    fn from(value: ChatCompletionRequestUserMessageContent) -> Self {
+impl From<&str> for SystemMessage {
+    fn from(value: &str) -> Self {
         Self {
-            content: value,
+            content: TextContent::Text(value.to_string()),
             name: None,
         }
     }
 }
-impl From<ChatCompletionRequestSystemMessageContent> for ChatCompletionRequestSystemMessage {
-    fn from(value: ChatCompletionRequestSystemMessageContent) -> Self {
+
+impl From<String> for SystemMessage {
+    fn from(value: String) -> Self {
         Self {
-            content: value,
+            content: TextContent::Text(value),
             name: None,
         }
     }
 }
-impl From<ChatCompletionRequestDeveloperMessageContent> for ChatCompletionRequestDeveloperMessage {
-    fn from(value: ChatCompletionRequestDeveloperMessageContent) -> Self {
+
+impl From<Vec<UserContentPart>> for crate::types::chat::UserMessage {
+    fn from(value: Vec<UserContentPart>) -> Self {
         Self {
-            content: value,
+            content: UserContent::Parts(value),
             name: None,
         }
     }
 }
-impl From<ChatCompletionRequestAssistantMessageContent> for ChatCompletionRequestAssistantMessage {
-    fn from(value: ChatCompletionRequestAssistantMessageContent) -> Self {
-        Self {
-            content: Some(value),
-            ..Default::default()
-        }
+
+impl From<AudioPart> for Vec<UserContentPart> {
+    fn from(value: AudioPart) -> Self {
+        vec![value.into()]
     }
 }
 
-// ---------- &str / String → Content ----------
-
-impl From<&str> for ChatCompletionRequestUserMessageContent {
-    fn from(value: &str) -> Self {
-        Self::Text(value.into())
+impl From<FilePart> for Vec<UserContentPart> {
+    fn from(value: FilePart) -> Self {
+        vec![value.into()]
     }
 }
-impl From<String> for ChatCompletionRequestUserMessageContent {
-    fn from(value: String) -> Self {
-        Self::Text(value)
-    }
-}
-impl From<&str> for ChatCompletionRequestSystemMessageContent {
-    fn from(value: &str) -> Self {
-        Self::Text(value.into())
-    }
-}
-impl From<String> for ChatCompletionRequestSystemMessageContent {
-    fn from(value: String) -> Self {
-        Self::Text(value)
-    }
-}
-impl From<&str> for ChatCompletionRequestDeveloperMessageContent {
-    fn from(value: &str) -> Self {
-        Self::Text(value.into())
-    }
-}
-impl From<String> for ChatCompletionRequestDeveloperMessageContent {
-    fn from(value: String) -> Self {
-        Self::Text(value)
-    }
-}
-impl From<&str> for ChatCompletionRequestAssistantMessageContent {
-    fn from(value: &str) -> Self {
-        Self::Text(value.into())
-    }
-}
-impl From<String> for ChatCompletionRequestAssistantMessageContent {
-    fn from(value: String) -> Self {
-        Self::Text(value)
-    }
-}
-impl From<&str> for ChatCompletionRequestToolMessageContent {
-    fn from(value: &str) -> Self {
-        Self::Text(value.into())
-    }
-}
-impl From<String> for ChatCompletionRequestToolMessageContent {
-    fn from(value: String) -> Self {
-        Self::Text(value)
-    }
-}
-
-// ---------- &str / String → Message ----------
-
-impl From<&str> for ChatCompletionRequestUserMessage {
-    fn from(value: &str) -> Self {
-        ChatCompletionRequestUserMessageContent::Text(value.into()).into()
-    }
-}
-impl From<String> for ChatCompletionRequestUserMessage {
-    fn from(value: String) -> Self {
-        value.as_str().into()
-    }
-}
-impl From<&str> for ChatCompletionRequestSystemMessage {
-    fn from(value: &str) -> Self {
-        ChatCompletionRequestSystemMessageContent::Text(value.into()).into()
-    }
-}
-impl From<String> for ChatCompletionRequestSystemMessage {
-    fn from(value: String) -> Self {
-        value.as_str().into()
-    }
-}
-impl From<&str> for ChatCompletionRequestDeveloperMessage {
-    fn from(value: &str) -> Self {
-        ChatCompletionRequestDeveloperMessageContent::Text(value.into()).into()
-    }
-}
-impl From<String> for ChatCompletionRequestDeveloperMessage {
-    fn from(value: String) -> Self {
-        value.as_str().into()
-    }
-}
-impl From<&str> for ChatCompletionRequestAssistantMessage {
-    fn from(value: &str) -> Self {
-        ChatCompletionRequestAssistantMessageContent::Text(value.into()).into()
-    }
-}
-impl From<String> for ChatCompletionRequestAssistantMessage {
-    fn from(value: String) -> Self {
-        value.as_str().into()
-    }
-}
-
-// ---------- Vec<UserMessageContentPart> → UserMessageContent ----------
-
-impl From<Vec<ChatCompletionRequestUserMessageContentPart>>
-    for ChatCompletionRequestUserMessageContent
-{
-    fn from(value: Vec<ChatCompletionRequestUserMessageContentPart>) -> Self {
-        Self::Array(value)
-    }
-}
-
-// ---------- Part-component → UserMessageContentPart ----------
-
-impl From<ChatCompletionRequestMessageContentPartText>
-    for ChatCompletionRequestUserMessageContentPart
-{
-    fn from(value: ChatCompletionRequestMessageContentPartText) -> Self {
-        Self::Text(value)
-    }
-}
-impl From<ChatCompletionRequestMessageContentPartImage>
-    for ChatCompletionRequestUserMessageContentPart
-{
-    fn from(value: ChatCompletionRequestMessageContentPartImage) -> Self {
-        Self::ImageUrl(value)
-    }
-}
-impl From<ChatCompletionRequestMessageContentPartAudio>
-    for ChatCompletionRequestUserMessageContentPart
-{
-    fn from(value: ChatCompletionRequestMessageContentPartAudio) -> Self {
-        Self::InputAudio(value)
-    }
-}
-
-// ---------- &str / String → text part ----------
-
-impl From<&str> for ChatCompletionRequestMessageContentPartText {
-    fn from(value: &str) -> Self {
-        Self {
-            text: value.into(),
-            cache_control: None,
-        }
-    }
-}
-impl From<String> for ChatCompletionRequestMessageContentPartText {
-    fn from(value: String) -> Self {
-        Self {
-            text: value,
-            cache_control: None,
-        }
-    }
-}
-
-// ---------- &str / String → FunctionName / NamedToolChoice ----------
 
 impl From<&str> for FunctionName {
     fn from(value: &str) -> Self {
-        Self { name: value.into() }
+        Self {
+            name: value.to_string(),
+        }
     }
 }
+
 impl From<String> for FunctionName {
     fn from(value: String) -> Self {
         Self { name: value }
     }
 }
-impl From<&str> for ChatCompletionNamedToolChoice {
-    fn from(value: &str) -> Self {
-        Self {
-            function: value.into(),
-        }
-    }
-}
-impl From<String> for ChatCompletionNamedToolChoice {
-    fn from(value: String) -> Self {
-        Self {
-            function: value.into(),
-        }
-    }
-}
-
-// ---------- ImageUrl conversions ----------
 
 impl From<&str> for ImageUrl {
     fn from(value: &str) -> Self {
         Self {
-            url: value.into(),
+            url: value.to_string(),
             detail: Default::default(),
         }
     }
 }
+
 impl From<String> for ImageUrl {
     fn from(value: String) -> Self {
         Self {
@@ -272,82 +86,36 @@ impl From<String> for ImageUrl {
         }
     }
 }
-impl From<ImageUrl> for ChatCompletionRequestMessageContentPartImage {
+
+impl From<ImageUrl> for ImagePart {
     fn from(value: ImageUrl) -> Self {
         Self {
-            image_url: value,
+            image: value,
             cache_control: None,
         }
     }
 }
 
-// ---------- Role::Display ----------
-
-impl Display for Role {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Self::User => "user",
-                Self::System => "system",
-                Self::Assistant => "assistant",
-                Self::Tool => "tool",
-            }
-        )
+impl From<FunctionTool> for Vec<ToolDefinition> {
+    fn from(value: FunctionTool) -> Self {
+        vec![ToolDefinition::Function(value)]
     }
 }
 
-// ---------- Tool → Vec<Tools> ----------
-
-impl From<ChatCompletionTool> for Vec<ChatCompletionTools> {
-    fn from(value: ChatCompletionTool) -> Self {
-        vec![ChatCompletionTools::Function(value)]
-    }
-}
-impl From<CustomToolChatCompletions> for Vec<ChatCompletionTools> {
-    fn from(value: CustomToolChatCompletions) -> Self {
-        vec![ChatCompletionTools::Custom(value)]
+impl From<CustomToolDefinition> for Vec<ToolDefinition> {
+    fn from(value: CustomToolDefinition) -> Self {
+        vec![ToolDefinition::Custom(value)]
     }
 }
 
-// ---------- Single message → Vec<RequestMessage> ----------
-
-impl From<ChatCompletionRequestUserMessage> for Vec<ChatCompletionRequestMessage> {
-    fn from(value: ChatCompletionRequestUserMessage) -> Self {
-        vec![value.into()]
-    }
-}
-impl From<ChatCompletionRequestSystemMessage> for Vec<ChatCompletionRequestMessage> {
-    fn from(value: ChatCompletionRequestSystemMessage) -> Self {
-        vec![value.into()]
-    }
-}
-impl From<ChatCompletionRequestDeveloperMessage> for Vec<ChatCompletionRequestMessage> {
-    fn from(value: ChatCompletionRequestDeveloperMessage) -> Self {
-        vec![value.into()]
-    }
-}
-impl From<ChatCompletionRequestAssistantMessage> for Vec<ChatCompletionRequestMessage> {
-    fn from(value: ChatCompletionRequestAssistantMessage) -> Self {
-        vec![value.into()]
-    }
-}
-impl From<ChatCompletionRequestToolMessage> for Vec<ChatCompletionRequestMessage> {
-    fn from(value: ChatCompletionRequestToolMessage) -> Self {
+impl From<crate::types::chat::UserMessage> for Vec<ChatMessage> {
+    fn from(value: crate::types::chat::UserMessage) -> Self {
         vec![value.into()]
     }
 }
 
-// ---------- ToolCall → MessageToolCalls ----------
-
-impl From<ChatCompletionMessageToolCall> for ChatCompletionMessageToolCalls {
-    fn from(value: ChatCompletionMessageToolCall) -> Self {
-        Self::Function(value)
-    }
-}
-impl From<ChatCompletionMessageCustomToolCall> for ChatCompletionMessageToolCalls {
-    fn from(value: ChatCompletionMessageCustomToolCall) -> Self {
-        Self::Custom(value)
+impl From<SystemMessage> for Vec<ChatMessage> {
+    fn from(value: SystemMessage) -> Self {
+        vec![value.into()]
     }
 }

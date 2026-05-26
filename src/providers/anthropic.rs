@@ -18,22 +18,16 @@ use crate::provider_http::{
     ProviderByteStream, ProviderEndpoint, ProviderRequest, ProviderResponse, SignedProviderRequest,
 };
 use crate::types::chat::{
-    CacheControl, CacheControlTtl, CacheControlType, ChatChoice, ChatChoiceStream,
-    ChatCompletionMessageToolCall, ChatCompletionMessageToolCallChunk,
-    ChatCompletionMessageToolCalls, ChatCompletionRequestAssistantMessage,
-    ChatCompletionRequestAssistantMessageContent, ChatCompletionRequestAssistantMessageContentPart,
-    ChatCompletionRequestDeveloperMessageContent, ChatCompletionRequestMessage,
-    ChatCompletionRequestMessageContentPartFile, ChatCompletionRequestMessageContentPartImage,
-    ChatCompletionRequestSystemMessageContent, ChatCompletionRequestToolMessage,
-    ChatCompletionRequestToolMessageContent, ChatCompletionRequestUserMessageContent,
-    ChatCompletionRequestUserMessageContentPart, ChatCompletionResponseMessage,
-    ChatCompletionResponseMessageAnnotation, ChatCompletionStreamResponseDelta, CompletionUsage,
-    CreateChatCompletionResponse, CreateChatCompletionStreamResponse, FinishReason,
-    FunctionCallStream, FunctionType, Role, UrlCitation,
+    Annotation, AssistantContent, AssistantContentPart, AssistantDelta, AssistantMessage,
+    CacheControl, CacheControlTtl, CacheControlType, ChatChoice, ChatMessage, ChatResponse,
+    ChatResponseMessage, ChatStreamChoice, ChatStreamChunk, FilePart, FinishReason,
+    FunctionCallDelta, FunctionToolCall, HostedToolUsage, ImagePart, ProviderContextBlock,
+    ReasoningBlock, Role, TextContent, ToolCall, ToolCallDelta, ToolCallKind, ToolContent,
+    ToolMessage, UrlCitation, Usage, UserContent, UserContentPart,
 };
 use crate::types::shared::{
-    AnthropicServerToolUse, AnthropicThinkingBlock, AnthropicThinkingParam, AnthropicThinkingType,
-    CompletionTokensDetails, FunctionCall, PromptTokensDetails, ResponseFormat,
+    AnthropicThinkingParam, AnthropicThinkingType, CompletionTokensDetails, FunctionCall,
+    PromptTokensDetails, ResponseFormat,
 };
 use crate::{
     ChatAdapterContext, ChatAdapterRequest, ChatCompletionAdapter, ChatStream, ModelName,
@@ -49,7 +43,7 @@ const RESPONSE_FORMAT_TOOL_NAME: &str = "json_tool_call";
 const TOOL_NAME_MAP_STATE_KEY: &str = "anthropic_tool_name_reverse_map";
 const OAUTH_TOKEN_PREFIX: &str = "sk-ant-oat";
 
-const SUPPORTED_OPENAI_CHAT_PARAMS: &[&str] = &[
+const SUPPORTED_CHAT_PARAMS: &[&str] = &[
     "anthropic_beta",
     "cache_control",
     "context_management",
@@ -72,7 +66,7 @@ const SUPPORTED_OPENAI_CHAT_PARAMS: &[&str] = &[
     "top_k",
     "top_p",
     "user",
-    "web_search_options",
+    "web_search",
 ];
 
 struct AnthropicProvider {
@@ -168,11 +162,11 @@ struct AnthropicChatAdapter {
 }
 
 impl ChatCompletionAdapter for AnthropicChatAdapter {
-    fn supported_openai_params(&self) -> Vec<&'static str> {
-        SUPPORTED_OPENAI_CHAT_PARAMS.to_vec()
+    fn supported_chat_params(&self) -> Vec<&'static str> {
+        SUPPORTED_CHAT_PARAMS.to_vec()
     }
 
-    fn map_openai_params(&self, params: ChatParameterMap) -> SigmaResult<ChatParameterMap> {
+    fn map_chat_params(&self, params: ChatParameterMap) -> SigmaResult<ChatParameterMap> {
         Ok(params)
     }
 
@@ -322,7 +316,7 @@ impl ChatCompletionAdapter for AnthropicChatAdapter {
         &self,
         context: &ChatAdapterContext<'_>,
         response: ProviderResponse,
-    ) -> SigmaResult<CreateChatCompletionResponse> {
+    ) -> SigmaResult<ChatResponse> {
         let body = parse_response_json(&self.provider, response.body.as_ref())?;
         anthropic_response_to_chat(context, body)
     }
@@ -845,7 +839,7 @@ fn map_tool_choice(params: &mut ChatParameterMap) {
 }
 
 fn map_web_search_tool(params: &mut ChatParameterMap) {
-    let Some(value) = params.remove("web_search_options") else {
+    let Some(value) = params.remove("web_search") else {
         return;
     };
     let user_location = value
@@ -890,7 +884,7 @@ fn is_internal_param(key: &str) -> bool {
 
 fn translate_anthropic_messages(
     provider: &ProviderId,
-    messages: &[ChatCompletionRequestMessage],
+    messages: &[ChatMessage],
     tool_name_forward_map: &HashMap<String, String>,
 ) -> SigmaResult<TranslatedMessages> {
     let mut output = Vec::<Value>::new();
@@ -898,20 +892,20 @@ fn translate_anthropic_messages(
 
     for message in messages {
         match message {
-            ChatCompletionRequestMessage::Developer(message) => {
+            ChatMessage::Developer(message) => {
                 append_system_content(&mut system, &developer_content_to_value(&message.content));
             }
-            ChatCompletionRequestMessage::System(message) => {
+            ChatMessage::System(message) => {
                 append_system_content(&mut system, &system_content_to_value(&message.content));
             }
-            ChatCompletionRequestMessage::User(message) => {
+            ChatMessage::User(message) => {
                 let content = user_content_blocks(provider, &message.content)?;
                 append_anthropic_message(&mut output, "user", content);
             }
-            ChatCompletionRequestMessage::Tool(message) => {
+            ChatMessage::Tool(message) => {
                 append_anthropic_message(&mut output, "user", vec![tool_result_block(message)]);
             }
-            ChatCompletionRequestMessage::Assistant(message) => {
+            ChatMessage::Assistant(message) => {
                 let content = assistant_content_blocks(provider, message, tool_name_forward_map)?;
                 if !content.is_empty() {
                     append_anthropic_message(&mut output, "assistant", content);
@@ -945,68 +939,47 @@ fn append_system_content(system: &mut Vec<Value>, content: &[Value]) {
     }
 }
 
-fn developer_content_to_value(
-    content: &ChatCompletionRequestDeveloperMessageContent,
-) -> Vec<Value> {
+fn developer_content_to_value(content: &TextContent) -> Vec<Value> {
     match content {
-        ChatCompletionRequestDeveloperMessageContent::Text(text) => {
+        TextContent::Text(text) => {
             vec![json!({"type": "text", "text": text})]
         }
-        ChatCompletionRequestDeveloperMessageContent::Array(parts) => parts
+        TextContent::Parts(parts) => parts
             .iter()
-            .map(|part| match part {
-                crate::types::chat::ChatCompletionRequestDeveloperMessageContentPart::Text(
-                    part,
-                ) => text_content_block(&part.text, part.cache_control.as_ref()),
-            })
+            .map(|part| text_content_block(&part.text, part.cache_control.as_ref()))
             .collect(),
     }
 }
 
-fn system_content_to_value(content: &ChatCompletionRequestSystemMessageContent) -> Vec<Value> {
+fn system_content_to_value(content: &TextContent) -> Vec<Value> {
     match content {
-        ChatCompletionRequestSystemMessageContent::Text(text) => {
+        TextContent::Text(text) => {
             vec![json!({"type": "text", "text": text})]
         }
-        ChatCompletionRequestSystemMessageContent::Array(parts) => parts
+        TextContent::Parts(parts) => parts
             .iter()
-            .map(|part| match part {
-                crate::types::chat::ChatCompletionRequestSystemMessageContentPart::Text(part) => {
-                    text_content_block(&part.text, part.cache_control.as_ref())
-                }
-            })
+            .map(|part| text_content_block(&part.text, part.cache_control.as_ref()))
             .collect(),
     }
 }
 
-fn user_content_blocks(
-    provider: &ProviderId,
-    content: &ChatCompletionRequestUserMessageContent,
-) -> SigmaResult<Vec<Value>> {
+fn user_content_blocks(provider: &ProviderId, content: &UserContent) -> SigmaResult<Vec<Value>> {
     match content {
-        ChatCompletionRequestUserMessageContent::Text(text) => {
-            Ok(vec![json!({"type": "text", "text": non_empty_text(text)})])
-        }
-        ChatCompletionRequestUserMessageContent::Array(parts) => parts
+        UserContent::Text(text) => Ok(vec![json!({"type": "text", "text": non_empty_text(text)})]),
+        UserContent::Parts(parts) => parts
             .iter()
             .map(|part| match part {
-                ChatCompletionRequestUserMessageContentPart::Text(part) => Ok(text_content_block(
+                UserContentPart::Text(part) => Ok(text_content_block(
                     non_empty_text(&part.text),
                     part.cache_control.as_ref(),
                 )),
-                ChatCompletionRequestUserMessageContentPart::ImageUrl(part) => {
-                    image_content_block(provider, part)
-                }
-                ChatCompletionRequestUserMessageContentPart::File(part) => {
-                    file_content_block(provider, part)
-                }
-                ChatCompletionRequestUserMessageContentPart::InputAudio(_) => {
-                    Err(SigmaError::ProviderTransform {
-                        provider: provider.clone(),
-                        message: "anthropic provider does not support input_audio message parts"
-                            .to_string(),
-                    })
-                }
+                UserContentPart::Image(part) => image_content_block(provider, part),
+                UserContentPart::File(part) => file_content_block(provider, part),
+                UserContentPart::Audio(_) => Err(SigmaError::ProviderTransform {
+                    provider: provider.clone(),
+                    message: "anthropic provider does not support input_audio message parts"
+                        .to_string(),
+                }),
             })
             .collect(),
     }
@@ -1014,31 +987,29 @@ fn user_content_blocks(
 
 fn assistant_content_blocks(
     provider: &ProviderId,
-    message: &ChatCompletionRequestAssistantMessage,
+    message: &AssistantMessage,
     tool_name_forward_map: &HashMap<String, String>,
 ) -> SigmaResult<Vec<Value>> {
     let mut content = Vec::new();
-    if let Some(provider_specific_fields) = &message.provider_specific_fields
-        && let Some(compaction_blocks) = provider_specific_fields
-            .get("compaction_blocks")
-            .and_then(Value::as_array)
-    {
-        content.extend(compaction_blocks.iter().cloned());
-    }
-    if let Some(thinking_blocks) = &message.thinking_blocks {
-        content.extend(thinking_blocks.iter().map(thinking_block_to_value));
+    content.extend(provider_context_content_blocks(
+        provider,
+        message.provider_context.as_deref(),
+        is_compaction_block,
+    ));
+    if let Some(reasoning) = &message.reasoning {
+        content.extend(reasoning.iter().filter_map(reasoning_block_to_anthropic));
     }
     if let Some(message_content) = &message.content {
         match message_content {
-            ChatCompletionRequestAssistantMessageContent::Text(text) => {
+            AssistantContent::Text(text) => {
                 if !text.is_empty() {
                     content.push(json!({"type": "text", "text": text}));
                 }
             }
-            ChatCompletionRequestAssistantMessageContent::Array(parts) => {
+            AssistantContent::Parts(parts) => {
                 for part in parts {
                     match part {
-                        ChatCompletionRequestAssistantMessageContentPart::Text(part) => {
+                        AssistantContentPart::Text(part) => {
                             if !part.text.is_empty() {
                                 content.push(text_content_block(
                                     &part.text,
@@ -1046,7 +1017,7 @@ fn assistant_content_blocks(
                                 ));
                             }
                         }
-                        ChatCompletionRequestAssistantMessageContentPart::Refusal(part) => {
+                        AssistantContentPart::Refusal(part) => {
                             if !part.refusal.is_empty() {
                                 content.push(json!({"type": "text", "text": part.refusal}));
                             }
@@ -1065,16 +1036,42 @@ fn assistant_content_blocks(
             }
         }
     }
+    content.extend(provider_context_content_blocks(
+        provider,
+        message.provider_context.as_deref(),
+        is_hosted_tool_result_block,
+    ));
     Ok(content)
+}
+
+fn provider_context_content_blocks(
+    provider: &ProviderId,
+    provider_context: Option<&[ProviderContextBlock]>,
+    predicate: fn(&Map<String, Value>) -> bool,
+) -> Vec<Value> {
+    let Some(provider_context) = provider_context else {
+        return Vec::new();
+    };
+
+    provider_context
+        .iter()
+        .filter(|block| {
+            block.provider == provider.as_str() && block.kind == "anthropic.content_block"
+        })
+        .filter_map(|block| block.value.as_object())
+        .filter(|block| predicate(block))
+        .cloned()
+        .map(Value::Object)
+        .collect()
 }
 
 fn tool_call_to_anthropic(
     provider: &ProviderId,
-    tool_call: &ChatCompletionMessageToolCalls,
+    tool_call: &ToolCall,
     tool_name_forward_map: &HashMap<String, String>,
 ) -> SigmaResult<Option<Value>> {
     match tool_call {
-        ChatCompletionMessageToolCalls::Function(tool_call) => {
+        ToolCall::Function(tool_call) => {
             let name = tool_name_forward_map
                 .get(&tool_call.function.name)
                 .cloned()
@@ -1093,21 +1090,17 @@ fn tool_call_to_anthropic(
                 "input": input
             })))
         }
-        ChatCompletionMessageToolCalls::Custom(_) => Ok(None),
+        ToolCall::Custom(_) => Ok(None),
     }
 }
 
-fn tool_result_block(message: &ChatCompletionRequestToolMessage) -> Value {
+fn tool_result_block(message: &ToolMessage) -> Value {
     let content = match &message.content {
-        ChatCompletionRequestToolMessageContent::Text(text) => Value::String(text.clone()),
-        ChatCompletionRequestToolMessageContent::Array(parts) => Value::Array(
+        ToolContent::Text(text) => Value::String(text.clone()),
+        ToolContent::Parts(parts) => Value::Array(
             parts
                 .iter()
-                .map(|part| match part {
-                    crate::types::chat::ChatCompletionRequestToolMessageContentPart::Text(part) => {
-                        text_content_block(&part.text, part.cache_control.as_ref())
-                    }
-                })
+                .map(|part| text_content_block(&part.text, part.cache_control.as_ref()))
                 .collect(),
         ),
     };
@@ -1118,11 +1111,8 @@ fn tool_result_block(message: &ChatCompletionRequestToolMessage) -> Value {
     })
 }
 
-fn image_content_block(
-    provider: &ProviderId,
-    part: &ChatCompletionRequestMessageContentPartImage,
-) -> SigmaResult<Value> {
-    source_from_url(provider, &part.image_url.url).map(|source| {
+fn image_content_block(provider: &ProviderId, part: &ImagePart) -> SigmaResult<Value> {
+    source_from_url(provider, &part.image.url).map(|source| {
         let mut block = Map::new();
         block.insert("type".to_string(), Value::String("image".to_string()));
         block.insert("source".to_string(), source);
@@ -1131,11 +1121,8 @@ fn image_content_block(
     })
 }
 
-fn file_content_block(
-    provider: &ProviderId,
-    part: &ChatCompletionRequestMessageContentPartFile,
-) -> SigmaResult<Value> {
-    if let Some(file_id) = &part.file.file_id {
+fn file_content_block(provider: &ProviderId, part: &FilePart) -> SigmaResult<Value> {
+    if let Some(file_id) = &part.file.id {
         let mut document = Map::new();
         document.insert("type".to_string(), Value::String("document".to_string()));
         document.insert(
@@ -1145,7 +1132,7 @@ fn file_content_block(
         insert_cache_control(&mut document, part.cache_control.as_ref());
         return Ok(Value::Object(document));
     }
-    if let Some(file_data) = &part.file.file_data {
+    if let Some(file_data) = &part.file.data {
         let mut document = Map::new();
         document.insert("type".to_string(), Value::String("document".to_string()));
         document.insert("source".to_string(), source_from_url(provider, file_data)?);
@@ -1157,7 +1144,7 @@ fn file_content_block(
     }
     Err(SigmaError::ProviderTransform {
         provider: provider.clone(),
-        message: "file message part requires file_id or file_data".to_string(),
+        message: "file message part requires id or data".to_string(),
     })
 }
 
@@ -1221,19 +1208,31 @@ fn cache_control_to_value(cache_control: &CacheControl) -> Value {
     Value::Object(value)
 }
 
-fn thinking_block_to_value(block: &AnthropicThinkingBlock) -> Value {
-    let mut value = Map::new();
-    value.insert("type".to_string(), Value::String(block.r#type.clone()));
-    if let Some(thinking) = &block.thinking {
-        value.insert("thinking".to_string(), Value::String(thinking.clone()));
+fn reasoning_block_to_anthropic(block: &ReasoningBlock) -> Option<Value> {
+    match block {
+        ReasoningBlock::Text { text, signature } => {
+            let mut value = Map::new();
+            value.insert("type".to_string(), Value::String("thinking".to_string()));
+            value.insert("thinking".to_string(), Value::String(text.clone()));
+            if let Some(signature) = signature {
+                value.insert("signature".to_string(), Value::String(signature.clone()));
+            }
+            Some(Value::Object(value))
+        }
+        ReasoningBlock::Redacted { data, signature } => {
+            let mut value = Map::new();
+            value.insert(
+                "type".to_string(),
+                Value::String("redacted_thinking".to_string()),
+            );
+            value.insert("data".to_string(), Value::String(data.clone()));
+            if let Some(signature) = signature {
+                value.insert("signature".to_string(), Value::String(signature.clone()));
+            }
+            Some(Value::Object(value))
+        }
+        ReasoningBlock::Signature { .. } => None,
     }
-    if let Some(signature) = &block.signature {
-        value.insert("signature".to_string(), Value::String(signature.clone()));
-    }
-    if let Some(data) = &block.data {
-        value.insert("data".to_string(), Value::String(data.clone()));
-    }
-    Value::Object(value)
 }
 
 fn append_anthropic_message(output: &mut Vec<Value>, role: &str, content: Vec<Value>) {
@@ -1314,10 +1313,25 @@ fn is_web_search_tool(tool: &Value) -> bool {
         .is_some_and(|value| value.starts_with("web_search"))
 }
 
+fn is_compaction_block(block: &Map<String, Value>) -> bool {
+    block.get("type").and_then(Value::as_str) == Some("compaction")
+}
+
+fn is_hosted_tool_result_block(block: &Map<String, Value>) -> bool {
+    block
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.ends_with("_tool_result"))
+}
+
+fn provider_context_block(provider: &ProviderId, kind: &str, value: Value) -> ProviderContextBlock {
+    ProviderContextBlock::new(provider.to_string(), kind, value)
+}
+
 fn anthropic_response_to_chat(
     context: &ChatAdapterContext<'_>,
     body: Value,
-) -> SigmaResult<CreateChatCompletionResponse> {
+) -> SigmaResult<ChatResponse> {
     if body.get("error").is_some() {
         return Err(error_from_body(context, StatusCode::OK, body));
     }
@@ -1331,13 +1345,10 @@ fn anthropic_response_to_chat(
     let reverse_map = reverse_tool_map(context);
     let mut text = String::new();
     let mut tool_calls = Vec::new();
-    let mut thinking_blocks = Vec::new();
+    let mut reasoning_blocks = Vec::new();
     let mut reasoning_content = String::new();
     let mut annotations = Vec::new();
-    let mut provider_fields = Map::new();
-    let mut web_search_results = Vec::new();
-    let mut tool_results = Vec::new();
-    let mut compaction_blocks = Vec::new();
+    let mut provider_context = Vec::new();
 
     for (index, block) in content.iter().enumerate() {
         match block.get("type").and_then(Value::as_str) {
@@ -1351,46 +1362,51 @@ fn anthropic_response_to_chat(
                 tool_calls.push(tool_use_to_openai(block, index as u32, &reverse_map));
             }
             Some("thinking") => {
-                let block = thinking_response_block(block);
-                if let Some(thinking) = &block.thinking {
+                let block = reasoning_response_block(block);
+                if let Some(thinking) = block.text_value() {
                     reasoning_content.push_str(thinking);
                 }
-                thinking_blocks.push(block);
+                reasoning_blocks.push(block);
             }
             Some("redacted_thinking") => {
-                thinking_blocks.push(thinking_response_block(block));
+                reasoning_blocks.push(reasoning_response_block(block));
             }
             Some(value) if value.ends_with("_tool_result") => {
-                if matches!(value, "web_search_tool_result" | "web_fetch_tool_result") {
-                    web_search_results.push(block.clone());
-                } else if value != "tool_search_tool_result" {
-                    tool_results.push(block.clone());
-                }
+                provider_context.push(provider_context_block(
+                    context.provider,
+                    "anthropic.content_block",
+                    block.clone(),
+                ));
             }
-            Some("compaction") => compaction_blocks.push(block.clone()),
+            Some("compaction") => {
+                provider_context.push(provider_context_block(
+                    context.provider,
+                    "anthropic.content_block",
+                    block.clone(),
+                ));
+            }
             _ => {}
         }
     }
     if let Some(context_management) = body.get("context_management") {
-        provider_fields.insert("context_management".to_string(), context_management.clone());
+        provider_context.push(provider_context_block(
+            context.provider,
+            "anthropic.response_field",
+            json!({
+                "name": "context_management",
+                "value": context_management,
+            }),
+        ));
     }
     if let Some(container) = body.get("container") {
-        provider_fields.insert("container".to_string(), container.clone());
-    }
-    if !web_search_results.is_empty() {
-        provider_fields.insert(
-            "web_search_results".to_string(),
-            Value::Array(web_search_results),
-        );
-    }
-    if !tool_results.is_empty() {
-        provider_fields.insert("tool_results".to_string(), Value::Array(tool_results));
-    }
-    if !compaction_blocks.is_empty() {
-        provider_fields.insert(
-            "compaction_blocks".to_string(),
-            Value::Array(compaction_blocks),
-        );
+        provider_context.push(provider_context_block(
+            context.provider,
+            "anthropic.response_field",
+            json!({
+                "name": "container",
+                "value": container,
+            }),
+        ));
     }
 
     let usage = body.get("usage").and_then(Value::as_object).map(|usage| {
@@ -1408,7 +1424,7 @@ fn anthropic_response_to_chat(
         .and_then(Value::as_str)
         .map(map_finish_reason);
 
-    Ok(CreateChatCompletionResponse {
+    Ok(ChatResponse {
         id: body
             .get("id")
             .and_then(Value::as_str)
@@ -1416,7 +1432,7 @@ fn anthropic_response_to_chat(
             .to_string(),
         choices: vec![ChatChoice {
             index: 0,
-            message: ChatCompletionResponseMessage {
+            message: ChatResponseMessage {
                 content: if text.is_empty() { None } else { Some(text) },
                 refusal: None,
                 tool_calls: if tool_calls.is_empty() {
@@ -1431,20 +1447,15 @@ fn anthropic_response_to_chat(
                 },
                 role: Role::Assistant,
                 audio: None,
-                thinking_blocks: if thinking_blocks.is_empty() {
+                reasoning: if reasoning_blocks.is_empty() {
                     None
                 } else {
-                    Some(thinking_blocks)
+                    Some(reasoning_blocks)
                 },
-                reasoning_content: if reasoning_content.is_empty() {
+                provider_context: if provider_context.is_empty() {
                     None
                 } else {
-                    Some(reasoning_content)
-                },
-                provider_specific_fields: if provider_fields.is_empty() {
-                    None
-                } else {
-                    Some(Value::Object(provider_fields))
+                    Some(provider_context)
                 },
             },
             finish_reason,
@@ -1462,32 +1473,26 @@ fn anthropic_response_to_chat(
     })
 }
 
-fn thinking_response_block(block: &Value) -> AnthropicThinkingBlock {
-    AnthropicThinkingBlock {
-        r#type: block
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or("thinking")
-            .to_string(),
-        thinking: block
-            .get("thinking")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        signature: block
-            .get("signature")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        data: block
-            .get("data")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+fn reasoning_response_block(block: &Value) -> ReasoningBlock {
+    match block.get("type").and_then(Value::as_str) {
+        Some("redacted_thinking") => ReasoningBlock::redacted(
+            block
+                .get("data")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            block.get("signature").and_then(Value::as_str),
+        ),
+        _ => ReasoningBlock::text(
+            block
+                .get("thinking")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            block.get("signature").and_then(Value::as_str),
+        ),
     }
 }
 
-fn collect_citations(
-    block: &Value,
-    annotations: &mut Vec<ChatCompletionResponseMessageAnnotation>,
-) {
+fn collect_citations(block: &Value, annotations: &mut Vec<Annotation>) {
     let Some(citations) = block.get("citations").and_then(Value::as_array) else {
         return;
     };
@@ -1507,7 +1512,7 @@ fn collect_citations(
             .or_else(|| citation.get("end_page_number"))
             .and_then(Value::as_u64)
             .unwrap_or(start as u64) as u32;
-        annotations.push(ChatCompletionResponseMessageAnnotation::UrlCitation {
+        annotations.push(Annotation::UrlCitation {
             url_citation: UrlCitation {
                 start_index: start,
                 end_index: end,
@@ -1526,7 +1531,7 @@ fn tool_use_to_openai(
     block: &Value,
     index: u32,
     reverse_map: &HashMap<String, String>,
-) -> ChatCompletionMessageToolCalls {
+) -> ToolCall {
     let name = block
         .get("name")
         .and_then(Value::as_str)
@@ -1544,18 +1549,18 @@ fn tool_use_to_openai(
     let arguments = serde_json::to_string(&input).unwrap_or_else(|_| "{}".to_string());
 
     let _ = index;
-    ChatCompletionMessageToolCalls::Function(ChatCompletionMessageToolCall {
+    ToolCall::Function(FunctionToolCall {
         id: block
             .get("id")
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string(),
         function: FunctionCall { name, arguments },
-        provider_specific_fields: None,
+        reasoning: None,
     })
 }
 
-fn anthropic_usage(usage: &Map<String, Value>, reasoning_content: Option<&str>) -> CompletionUsage {
+fn anthropic_usage(usage: &Map<String, Value>, reasoning_content: Option<&str>) -> Usage {
     let raw_input = u32_field(usage, "input_tokens");
     let cache_creation = u32_field(usage, "cache_creation_input_tokens");
     let cache_read = u32_field(usage, "cache_read_input_tokens");
@@ -1564,13 +1569,13 @@ fn anthropic_usage(usage: &Map<String, Value>, reasoning_content: Option<&str>) 
     let reasoning_tokens = reasoning_content
         .filter(|value| !value.is_empty())
         .map(|_| 0);
-    CompletionUsage {
+    Usage {
         prompt_tokens,
         completion_tokens,
         total_tokens: prompt_tokens + completion_tokens,
         cache_creation_input_tokens: optional_nonzero(cache_creation),
         cache_read_input_tokens: optional_nonzero(cache_read),
-        server_tool_use: usage.get("server_tool_use").and_then(server_tool_use),
+        hosted_tool_use: usage.get("server_tool_use").and_then(server_tool_use),
         inference_geo: usage
             .get("inference_geo")
             .and_then(Value::as_str)
@@ -1598,9 +1603,9 @@ fn anthropic_usage(usage: &Map<String, Value>, reasoning_content: Option<&str>) 
     }
 }
 
-fn server_tool_use(value: &Value) -> Option<AnthropicServerToolUse> {
+fn server_tool_use(value: &Value) -> Option<HostedToolUsage> {
     let object = value.as_object()?;
-    Some(AnthropicServerToolUse {
+    Some(HostedToolUsage {
         web_search_requests: optional_nonzero(u32_field(object, "web_search_requests")),
         tool_search_requests: optional_nonzero(u32_field(object, "tool_search_requests")),
     })
@@ -1631,7 +1636,7 @@ struct AnthropicSseStream {
     provider: ProviderId,
     stream: ProviderByteStream,
     buffer: String,
-    pending: std::collections::VecDeque<SigmaResult<CreateChatCompletionStreamResponse>>,
+    pending: std::collections::VecDeque<SigmaResult<ChatStreamChunk>>,
     done: bool,
     id: String,
     model: String,
@@ -1816,15 +1821,15 @@ impl AnthropicSseStream {
                 self.current_tool_name = Some(name.clone());
                 self.pending.push_back(Ok(self.chunk(
                     None,
-                    Some(vec![ChatCompletionMessageToolCallChunk {
+                    Some(vec![ToolCallDelta {
                         index,
                         id: Some(id),
-                        r#type: Some(FunctionType::Function),
-                        function: Some(FunctionCallStream {
+                        r#type: Some(ToolCallKind::Function),
+                        function: Some(FunctionCallDelta {
                             name: Some(name),
                             arguments: Some(String::new()),
                         }),
-                        provider_specific_fields: None,
+                        reasoning: None,
                     }]),
                     None,
                     None,
@@ -1832,7 +1837,7 @@ impl AnthropicSseStream {
                 )));
             }
             Some("thinking" | "redacted_thinking") => {
-                let thinking = thinking_response_block(block);
+                let thinking = reasoning_response_block(block);
                 self.pending.push_back(Ok(self.chunk(
                     None,
                     None,
@@ -1869,7 +1874,7 @@ impl AnthropicSseStream {
                     .to_string();
                 self.pending.push_back(Ok(self.chunk(
                     None,
-                    Some(vec![ChatCompletionMessageToolCallChunk {
+                    Some(vec![ToolCallDelta {
                         index: self.current_tool_index.unwrap_or_else(|| {
                             value
                                 .get("index")
@@ -1879,11 +1884,11 @@ impl AnthropicSseStream {
                         }),
                         id: None,
                         r#type: None,
-                        function: Some(FunctionCallStream {
+                        function: Some(FunctionCallDelta {
                             name: None,
                             arguments: Some(arguments),
                         }),
-                        provider_specific_fields: None,
+                        reasoning: None,
                     }]),
                     None,
                     None,
@@ -1891,18 +1896,13 @@ impl AnthropicSseStream {
                 )));
             }
             Some("thinking_delta" | "signature_delta") => {
-                let thinking = AnthropicThinkingBlock {
-                    r#type: "thinking".to_string(),
-                    thinking: delta
+                let thinking = ReasoningBlock::text(
+                    delta
                         .get("thinking")
                         .and_then(Value::as_str)
-                        .map(str::to_string),
-                    signature: delta
-                        .get("signature")
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                    data: None,
-                };
+                        .unwrap_or_default(),
+                    delta.get("signature").and_then(Value::as_str),
+                );
                 self.pending.push_back(Ok(self.chunk(
                     None,
                     None,
@@ -1923,7 +1923,7 @@ impl AnthropicSseStream {
             .map(map_finish_reason);
         let usage = value.get("usage").and_then(Value::as_object).map(|usage| {
             let completion_tokens = u32_field(usage, "output_tokens");
-            CompletionUsage {
+            Usage {
                 prompt_tokens: self.prompt_tokens,
                 completion_tokens,
                 total_tokens: self.prompt_tokens + completion_tokens,
@@ -1935,7 +1935,7 @@ impl AnthropicSseStream {
                     usage,
                     "cache_read_input_tokens",
                 )),
-                server_tool_use: usage.get("server_tool_use").and_then(server_tool_use),
+                hosted_tool_use: usage.get("server_tool_use").and_then(server_tool_use),
                 inference_geo: usage
                     .get("inference_geo")
                     .and_then(Value::as_str)
@@ -1969,31 +1969,21 @@ impl AnthropicSseStream {
     fn chunk(
         &self,
         content: Option<String>,
-        tool_calls: Option<Vec<ChatCompletionMessageToolCallChunk>>,
+        tool_calls: Option<Vec<ToolCallDelta>>,
         finish_reason: Option<FinishReason>,
-        thinking_blocks: Option<Vec<AnthropicThinkingBlock>>,
-        usage: Option<CompletionUsage>,
-    ) -> CreateChatCompletionStreamResponse {
-        CreateChatCompletionStreamResponse {
+        reasoning: Option<Vec<ReasoningBlock>>,
+        usage: Option<Usage>,
+    ) -> ChatStreamChunk {
+        ChatStreamChunk {
             id: self.id.clone(),
-            choices: vec![ChatChoiceStream {
+            choices: vec![ChatStreamChoice {
                 index: 0,
-                delta: ChatCompletionStreamResponseDelta {
+                delta: AssistantDelta {
                     content,
                     tool_calls,
                     role: None,
                     refusal: None,
-                    thinking_blocks: thinking_blocks.clone(),
-                    reasoning_content: thinking_blocks
-                        .as_ref()
-                        .map(|blocks| {
-                            blocks
-                                .iter()
-                                .filter_map(|block| block.thinking.as_deref())
-                                .collect::<String>()
-                        })
-                        .filter(|value| !value.is_empty()),
-                    provider_specific_fields: None,
+                    reasoning,
                 },
                 finish_reason,
                 logprobs: None,
@@ -2008,7 +1998,7 @@ impl AnthropicSseStream {
 }
 
 impl Stream for AnthropicSseStream {
-    type Item = SigmaResult<CreateChatCompletionStreamResponse>;
+    type Item = SigmaResult<ChatStreamChunk>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if let Some(item) = self.pending.pop_front() {

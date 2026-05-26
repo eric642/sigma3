@@ -4,16 +4,10 @@ use futures_util::StreamExt;
 use http::StatusCode;
 use serde_json::{Value, json};
 use sigma::types::chat::{
-    CacheControl, ChatCompletionNamedToolChoice, ChatCompletionRequestDeveloperMessage,
-    ChatCompletionRequestDeveloperMessageContent, ChatCompletionRequestMessage,
-    ChatCompletionRequestMessageContentPartAudio, ChatCompletionRequestMessageContentPartFile,
-    ChatCompletionRequestMessageContentPartImage, ChatCompletionRequestMessageContentPartText,
-    ChatCompletionRequestUserMessage, ChatCompletionRequestUserMessageContent,
-    ChatCompletionRequestUserMessageContentPart, ChatCompletionResponseMessageAnnotation,
-    ChatCompletionStreamOptions, ChatCompletionTool, ChatCompletionToolChoiceOption,
-    ChatCompletionTools, CreateChatCompletionRequest, CreateChatCompletionRequestArgs,
-    CreateChatCompletionRequestParamsArgs, FileObject, InputAudio, InputAudioFormat,
-    PredictionContent, PredictionContentContent, ServiceTier,
+    Annotation, AudioPart, CacheControl, ChatRequest, ChatRequestParams, DeveloperMessage,
+    FileInput, FilePart, FunctionTool, ImagePart, InputAudio, InputAudioFormat,
+    NamedFunctionToolChoice, PredictionContent, PredictionContentValue, ServiceTier, StreamOptions,
+    TextContent, TextPart, ToolChoice, ToolDefinition, UserContent, UserContentPart, UserMessage,
 };
 use sigma::types::shared::{
     FunctionName, FunctionObject, ImageUrl, ResponseFormat, ResponseFormatJsonSchema,
@@ -66,20 +60,13 @@ fn provider_config_map(value: Value) -> ProviderConfigMap {
     }
 }
 
-fn request(model: ModelRef) -> CreateChatCompletionRequest {
-    CreateChatCompletionRequestArgs::default()
-        .messages(vec![ChatCompletionRequestMessage::User(
-            ChatCompletionRequestUserMessage::from("hello"),
-        )])
-        .model(model)
-        .params(
-            CreateChatCompletionRequestParamsArgs::default()
-                .temperature(0.2f32)
-                .build()
-                .unwrap(),
-        )
-        .build()
-        .unwrap()
+fn request(model: ModelRef) -> ChatRequest {
+    ChatRequest::new(model, vec![UserMessage::from("hello").into()]).with_params(
+        ChatRequestParams {
+            temperature: Some(0.2f32),
+            ..Default::default()
+        },
+    )
 }
 
 fn response_body(model: &str, content: &str) -> Value {
@@ -264,19 +251,17 @@ async fn openai_create_preserves_developer_role_for_openai() {
         Value::Null,
     ))
     .unwrap();
-    let request = CreateChatCompletionRequestArgs::default()
-        .messages(vec![
-            ChatCompletionRequestMessage::Developer(ChatCompletionRequestDeveloperMessage {
-                content: ChatCompletionRequestDeveloperMessageContent::Text(
-                    "Be precise.".to_string(),
-                ),
+    let request = ChatRequest::new(
+        ModelRef::model("gpt-public"),
+        vec![
+            DeveloperMessage {
+                content: TextContent::Text("Be precise.".to_string()),
                 name: None,
-            }),
-            ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage::from("hello")),
-        ])
-        .model(ModelRef::model("gpt-public"))
-        .build()
-        .unwrap();
+            }
+            .into(),
+            UserMessage::from("hello").into(),
+        ],
+    );
 
     client.chat().create(&request).await.unwrap();
 
@@ -301,53 +286,45 @@ async fn openai_create_sends_multimodal_user_content_parts() {
         Value::Null,
     ))
     .unwrap();
-    let request = CreateChatCompletionRequestArgs::default()
-        .messages(vec![ChatCompletionRequestMessage::User(
-            ChatCompletionRequestUserMessage {
-                content: ChatCompletionRequestUserMessageContent::Array(vec![
-                    ChatCompletionRequestUserMessageContentPart::Text(
-                        ChatCompletionRequestMessageContentPartText {
-                            text: "Describe these inputs.".to_string(),
-                            cache_control: Some(CacheControl::ephemeral()),
+    let request = ChatRequest::new(
+        ModelRef::model("gpt-public"),
+        vec![
+            UserMessage {
+                content: UserContent::Parts(vec![
+                    UserContentPart::Text(TextPart {
+                        text: "Describe these inputs.".to_string(),
+                        cache_control: Some(CacheControl::ephemeral()),
+                    }),
+                    UserContentPart::Image(ImagePart {
+                        image: ImageUrl {
+                            url: "data:image/png;base64,AAAA".to_string(),
+                            detail: None,
                         },
-                    ),
-                    ChatCompletionRequestUserMessageContentPart::ImageUrl(
-                        ChatCompletionRequestMessageContentPartImage {
-                            image_url: ImageUrl {
-                                url: "data:image/png;base64,AAAA".to_string(),
-                                detail: None,
-                            },
-                            cache_control: Some(CacheControl::ephemeral()),
+                        cache_control: Some(CacheControl::ephemeral()),
+                    }),
+                    UserContentPart::Audio(AudioPart {
+                        input_audio: InputAudio {
+                            data: "UklGRg==".to_string(),
+                            format: InputAudioFormat::Wav,
                         },
-                    ),
-                    ChatCompletionRequestUserMessageContentPart::InputAudio(
-                        ChatCompletionRequestMessageContentPartAudio {
-                            input_audio: InputAudio {
-                                data: "UklGRg==".to_string(),
-                                format: InputAudioFormat::Wav,
-                            },
+                    }),
+                    UserContentPart::File(FilePart {
+                        file: FileInput {
+                            data: Some("data:application/pdf;base64,JVBERi0=".to_string()),
+                            id: None,
+                            filename: Some("paper.pdf".to_string()),
+                            media_type: None,
+                            detail: None,
+                            video_metadata: None,
                         },
-                    ),
-                    ChatCompletionRequestUserMessageContentPart::File(
-                        ChatCompletionRequestMessageContentPartFile {
-                            file: FileObject {
-                                file_data: Some("data:application/pdf;base64,JVBERi0=".to_string()),
-                                file_id: None,
-                                filename: Some("paper.pdf".to_string()),
-                                format: None,
-                                detail: None,
-                                video_metadata: None,
-                            },
-                            cache_control: Some(CacheControl::ephemeral()),
-                        },
-                    ),
+                        cache_control: Some(CacheControl::ephemeral()),
+                    }),
                 ]),
                 name: None,
-            },
-        )])
-        .model(ModelRef::model("gpt-public"))
-        .build()
-        .unwrap();
+            }
+            .into(),
+        ],
+    );
 
     client.chat().create(&request).await.unwrap();
 
@@ -381,7 +358,7 @@ async fn openai_create_passes_prediction_content() {
     ))
     .unwrap();
     let mut request = request(ModelRef::model("gpt-public"));
-    request.params.prediction = Some(PredictionContent::Content(PredictionContentContent::Text(
+    request.params.prediction = Some(PredictionContent::Content(PredictionContentValue::Text(
         "expected output".to_string(),
     )));
 
@@ -522,7 +499,7 @@ async fn openai_create_passes_tools_tool_choice_and_parallel_tool_calls() {
     ))
     .unwrap();
     let mut request = request(ModelRef::model("gpt-public"));
-    request.params.tools = Some(vec![ChatCompletionTools::Function(ChatCompletionTool {
+    request.params.tools = Some(vec![ToolDefinition::Function(FunctionTool {
         function: FunctionObject {
             name: "get_weather".to_string(),
             description: Some("Get weather".to_string()),
@@ -536,13 +513,11 @@ async fn openai_create_passes_tools_tool_choice_and_parallel_tool_calls() {
             strict: Some(true),
         },
     })]);
-    request.params.tool_choice = Some(ChatCompletionToolChoiceOption::Function(
-        ChatCompletionNamedToolChoice {
-            function: FunctionName {
-                name: "get_weather".to_string(),
-            },
+    request.params.tool_choice = Some(ToolChoice::Function(NamedFunctionToolChoice {
+        function: FunctionName {
+            name: "get_weather".to_string(),
         },
-    ));
+    }));
     request.params.parallel_tool_calls = Some(true);
 
     client.chat().create(&request).await.unwrap();
@@ -1113,7 +1088,7 @@ async fn openai_create_parses_annotations_and_prediction_usage_details() {
     let annotation = &response.choices[0].message.annotations.as_ref().unwrap()[0];
     assert!(matches!(
         annotation,
-        ChatCompletionResponseMessageAnnotation::UrlCitation { url_citation }
+        Annotation::UrlCitation { url_citation }
             if url_citation.url == "https://example.test/source"
     ));
     assert_eq!(
@@ -1124,6 +1099,56 @@ async fn openai_create_parses_annotations_and_prediction_usage_details() {
             .unwrap()
             .accepted_prediction_tokens,
         Some(1)
+    );
+}
+
+#[tokio::test]
+async fn openai_create_maps_reasoning_content_to_reasoning_blocks() {
+    let server = MockServer::start().await;
+    mount_json_response(
+        &server,
+        "/v1/chat/completions",
+        json!({
+            "id": "chatcmpl_openai",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "Final answer.",
+                    "reasoning_content": "Hidden reasoning."
+                },
+                "finish_reason": "stop",
+            }],
+            "created": 1,
+            "model": "gpt-4o-mini",
+            "object": "chat.completion",
+            "usage": {
+                "prompt_tokens": 1,
+                "completion_tokens": 2,
+                "total_tokens": 3
+            },
+        }),
+    )
+    .await;
+    let client = Client::build(openai_config(
+        "openai-compatible",
+        "compatible-reasoning",
+        Some(format!("{}/v1", server.uri())),
+        Some(SecretString::from("token")),
+        HashMap::new(),
+        Value::Null,
+    ))
+    .unwrap();
+
+    let response = client
+        .chat()
+        .create(&request(ModelRef::model("gpt-public")))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.choices[0].message.reasoning.as_ref().unwrap()[0].text_value(),
+        Some("Hidden reasoning.")
     );
 }
 
@@ -1168,7 +1193,7 @@ async fn openai_create_stream_preserves_usage_chunk_when_include_usage_true() {
     ))
     .unwrap();
     let mut request = request(ModelRef::model("gpt-public"));
-    request.params.stream_options = Some(ChatCompletionStreamOptions {
+    request.params.stream_options = Some(StreamOptions {
         include_usage: Some(true),
         include_obfuscation: None,
     });
@@ -1195,6 +1220,51 @@ async fn openai_create_stream_preserves_usage_chunk_when_include_usage_true() {
 }
 
 #[tokio::test]
+async fn openai_create_stream_maps_reasoning_content_to_reasoning_blocks() {
+    let server = MockServer::start().await;
+    mount_stream_response(
+        &server,
+        format!(
+            "data: {}\n\ndata: [DONE]\n\n",
+            stream_chunk(
+                "chunk-reasoning",
+                0,
+                json!({
+                    "reasoning_content": "partial thought"
+                }),
+                Value::Null,
+            )
+        ),
+    )
+    .await;
+    let client = Client::build(openai_config(
+        "openai-compatible",
+        "compatible-stream-reasoning",
+        Some(format!("{}/v1", server.uri())),
+        Some(SecretString::from("token")),
+        HashMap::new(),
+        Value::Null,
+    ))
+    .unwrap();
+
+    let chunks = client
+        .chat()
+        .create_stream(&request(ModelRef::model("gpt-public")))
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+
+    assert_eq!(
+        chunks[0].choices[0].delta.reasoning.as_ref().unwrap()[0].text_value(),
+        Some("partial thought")
+    );
+}
+
+#[tokio::test]
 async fn openai_create_stream_preserves_choice_indices_for_n_greater_than_one() {
     let server = MockServer::start().await;
     mount_stream_response(
@@ -1216,7 +1286,7 @@ async fn openai_create_stream_preserves_choice_indices_for_n_greater_than_one() 
     ))
     .unwrap();
     let mut request = request(ModelRef::model("gpt-public"));
-    request.params.n = Some(2);
+    request.params.count = Some(2);
 
     let chunks = client
         .chat()

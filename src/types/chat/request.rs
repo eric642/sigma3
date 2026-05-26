@@ -1,132 +1,142 @@
 use std::collections::HashMap;
 
-use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::config::{ChatParameterMap, ProviderOptionsMap};
 use crate::error::SigmaError;
-use crate::model::ModelRef;
-use crate::types::chat::messages::ChatCompletionRequestMessage;
+use crate::model::{ModelRef, ProviderId};
+use crate::types::chat::messages::ChatMessage;
 use crate::types::chat::options::{
-    ChatCompletionAudio, ChatCompletionStreamOptions, PredictionContent, PromptCacheRetention,
-    ResponseModalities, ServiceTier, Verbosity, WebSearchOptions,
+    AudioOutput, OutputModality, PredictionContent, PromptCacheRetention, ServiceTier,
+    StreamOptions, Verbosity, WebSearchOptions,
 };
-use crate::types::chat::tools::{ChatCompletionToolChoiceOption, ChatCompletionTools};
-use crate::types::shared::{AnthropicThinkingParam, ReasoningEffort, ResponseFormat};
+use crate::types::chat::tools::{ToolChoice, ToolDefinition};
+use crate::types::shared::{ReasoningEffort, ResponseFormat};
 
 use super::cache_control::CacheControl;
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-#[serde(untagged)]
-pub enum Prompt {
-    String(String),
-    StringArray(Vec<String>),
-    IntegerArray(Vec<u32>),
-    ArrayOfIntegerArray(Vec<Vec<u32>>),
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+/// Stop sequence configuration for a chat request.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum StopConfiguration {
+    /// A single stop sequence.
     String(String),
+    /// Multiple stop sequences.
     StringArray(Vec<String>),
 }
 
-#[derive(Clone, Serialize, Default, Debug, Builder, Deserialize, PartialEq)]
-#[builder(name = "CreateChatCompletionRequestArgs")]
-#[builder(pattern = "mutable")]
-#[builder(setter(into, strip_option), default)]
-#[builder(derive(Debug))]
-#[builder(build_fn(error = "SigmaError"))]
-pub struct CreateChatCompletionRequest {
-    /// Messages that form the conversation sent to the model.
-    pub messages: Vec<ChatCompletionRequestMessage>,
+/// Provider-neutral chat request.
+///
+/// `model` is resolved through sigma's deployment router. `params` contains
+/// semantic chat controls that providers translate to native request fields.
+/// `provider_options` is the explicit escape hatch for provider-native request
+/// overrides and is keyed by configured provider id.
+#[derive(Clone, Serialize, Default, Debug, Deserialize, PartialEq)]
+pub struct ChatRequest {
+    /// Conversation messages sent to the model.
+    pub messages: Vec<ChatMessage>,
     /// Model selector used by sigma routing.
-    ///
-    /// Plain strings deserialize as [`ModelRef::model`], preserving
-    /// OpenAI-compatible JSON while allowing callers to use deployment or
-    /// provider-model routing in Rust.
     pub model: ModelRef,
-
-    /// OpenAI-compatible chat completion parameters.
-    ///
-    /// These fields are flattened into the serialized request body so the wire
-    /// format remains OpenAI-compatible while keeping routing fields separate
-    /// from model parameters in Rust.
-    #[serde(flatten)]
-    pub params: CreateChatCompletionRequestParams,
-    /// Provider-scoped request options.
-    ///
-    /// The map key is a configured provider instance id, not a provider kind.
-    /// For example, a Zhipu AI endpoint configured with
-    /// `kind = "openai-compatible"` should use the provider id such as
-    /// `"zhipu"` here. When that provider is selected, standard adapters
-    /// shallow-merge the matching object into the final provider request body
-    /// after parameter mapping and adapter-generated fields.
-    ///
-    /// Values in this map have the highest request-body priority and may
-    /// override generated fields such as `"model"`, `"messages"`, and
-    /// `"stream"`. Provider adapters may also reserve option keys for headers
-    /// or other provider-specific controls. To send a provider-native
-    /// OpenAI-style `metadata` field, include a `"metadata"` entry inside the
-    /// provider's options object.
+    /// Provider-neutral chat parameters.
+    #[serde(default, skip_serializing_if = "ChatRequestParams::is_empty")]
+    pub params: ChatRequestParams,
+    /// Provider-scoped native request overrides.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub provider_options: ProviderOptionsMap,
 }
 
-/// OpenAI-compatible chat completion parameters.
+impl ChatRequest {
+    /// Creates a chat request for a routed model and message list.
+    pub fn new(model: ModelRef, messages: Vec<ChatMessage>) -> Self {
+        Self {
+            messages,
+            model,
+            params: ChatRequestParams::default(),
+            provider_options: ProviderOptionsMap::default(),
+        }
+    }
+
+    /// Returns this request with semantic parameters attached.
+    pub fn with_params(mut self, params: ChatRequestParams) -> Self {
+        self.params = params;
+        self
+    }
+
+    /// Adds one provider-native option under the selected provider id.
+    ///
+    /// Provider options override generated provider request-body fields after
+    /// semantic mapping. Use them only for provider-native behavior that sigma
+    /// does not model directly.
+    pub fn with_provider_option(
+        mut self,
+        provider: ProviderId,
+        key: impl Into<String>,
+        value: Value,
+    ) -> Self {
+        self.provider_options
+            .entry(provider)
+            .or_default()
+            .insert(key.into(), value);
+        self
+    }
+
+    pub(crate) fn chat_parameters(&self) -> Result<ChatParameterMap, SigmaError> {
+        match serde_json::to_value(&self.params)
+            .map_err(|err| SigmaError::InvalidArgument(err.to_string()))?
+        {
+            Value::Object(params) => Ok(params),
+            _ => Err(SigmaError::InvalidArgument(
+                "chat request parameters did not serialize to an object".to_string(),
+            )),
+        }
+    }
+}
+
+/// Provider-neutral chat request parameters.
 ///
-/// This type contains request fields that are sent as provider parameters after
-/// deployment defaults are applied and routing-only fields are removed. It is
-/// flattened into [`CreateChatCompletionRequest`] during JSON serialization.
-#[derive(Clone, Serialize, Default, Debug, Builder, Deserialize, PartialEq)]
-#[builder(name = "CreateChatCompletionRequestParamsArgs")]
-#[builder(pattern = "mutable")]
-#[builder(setter(into, strip_option), default)]
-#[builder(derive(Debug))]
-#[builder(build_fn(error = "SigmaError"))]
-pub struct CreateChatCompletionRequestParams {
-    /// Output modalities requested from multimodal-capable models.
+/// Providers map these semantic fields to native names and reject unsupported
+/// parameters through their configured parameter policy.
+#[derive(Clone, Serialize, Default, Debug, Deserialize, PartialEq)]
+pub struct ChatRequestParams {
+    /// Output modalities requested from multimodal models.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub modalities: Option<Vec<ResponseModalities>>,
-    /// Controls text verbosity for models that support verbosity tuning.
+    pub output_modalities: Option<Vec<OutputModality>>,
+    /// Text verbosity hint.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verbosity: Option<Verbosity>,
-    /// Reasoning effort requested for reasoning-capable models.
+    /// Portable reasoning effort hint.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
-    /// Maximum number of output tokens the provider may generate.
-    ///
-    /// Anthropic's Messages API requires `max_tokens`. OpenAI-compatible
-    /// callers may use either this field or [`CreateChatCompletionRequestParams::max_completion_tokens`];
-    /// the Anthropic provider maps both to native `max_tokens`.
+    /// Maximum output tokens.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
-    /// Maximum number of completion tokens the model may generate.
+    /// Maximum completion tokens for providers that distinguish completion
+    /// tokens from other output tokens.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_completion_tokens: Option<u32>,
-    /// Penalty applied to repeated token frequency.
+    /// Frequency penalty.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frequency_penalty: Option<f32>,
-    /// Penalty applied when tokens have already appeared in the context.
+    /// Presence penalty.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub presence_penalty: Option<f32>,
-    /// Web search controls for providers that support hosted search.
+    /// Hosted web-search options.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub web_search_options: Option<WebSearchOptions>,
-    /// Number of top log probabilities to include when logprobs are enabled.
+    pub web_search: Option<WebSearchOptions>,
+    /// Number of top log probabilities to include when supported.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_logprobs: Option<u8>,
-    /// Requested response formatting mode or schema.
+    /// Structured response format hint.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_format: Option<ResponseFormat>,
-    /// Audio output configuration for audio-capable models.
+    /// Audio output configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub audio: Option<ChatCompletionAudio>,
+    pub audio_output: Option<AudioOutput>,
     /// Whether the provider should store the completion when supported.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub store: Option<bool>,
-    /// Whether the request asks for provider streaming.
+    /// Whether this request should stream provider output.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
     /// Stop sequence configuration.
@@ -140,13 +150,13 @@ pub struct CreateChatCompletionRequestParams {
     pub logprobs: Option<bool>,
     /// Number of completions to generate.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub n: Option<u8>,
-    /// Predicted output content for providers that support prediction hints.
+    pub count: Option<u8>,
+    /// Predicted output content.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prediction: Option<PredictionContent>,
-    /// Options that control streamed responses.
+    /// Stream response options.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub stream_options: Option<ChatCompletionStreamOptions>,
+    pub stream_options: Option<StreamOptions>,
     /// Provider service tier selection.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<ServiceTier>,
@@ -156,52 +166,36 @@ pub struct CreateChatCompletionRequestParams {
     /// Nucleus sampling probability.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f32>,
-    /// Anthropic top-k sampling parameter.
+    /// Top-k sampling parameter.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_k: Option<u32>,
-    /// Tools the model may call.
+    /// Tool definitions available to the model.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tools: Option<Vec<ChatCompletionTools>>,
-    /// Tool selection mode or named tool choice.
+    pub tools: Option<Vec<ToolDefinition>>,
+    /// Tool selection policy.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_choice: Option<ChatCompletionToolChoiceOption>,
-    /// Whether the model may issue multiple tool calls in parallel.
+    pub tool_choice: Option<ToolChoice>,
+    /// Whether the model may issue tool calls in parallel.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parallel_tool_calls: Option<bool>,
     /// Stable safety identifier for provider abuse monitoring.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub safety_identifier: Option<String>,
-    /// Prompt cache key for providers that support prompt caching.
+    /// Prompt cache key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_cache_key: Option<String>,
     /// Prompt cache retention policy.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_cache_retention: Option<PromptCacheRetention>,
-    /// Native Anthropic thinking controls.
-    ///
-    /// Use this for provider-specific control. For portable reasoning hints,
-    /// prefer [`CreateChatCompletionRequestParams::reasoning_effort`].
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub thinking: Option<AnthropicThinkingParam>,
-    /// Request-level cache-control configuration.
-    ///
-    /// Use content part cache-control fields for explicit cache breakpoints.
-    /// Providers translate this semantic hint to their native request-level
-    /// cache-control shape when supported.
+    /// Request-level prompt-cache behavior.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<CacheControl>,
 }
 
-impl CreateChatCompletionRequest {
-    pub(crate) fn chat_parameters(&self) -> Result<ChatParameterMap, SigmaError> {
-        match serde_json::to_value(&self.params)
-            .map_err(|err| SigmaError::InvalidArgument(err.to_string()))?
-        {
-            serde_json::Value::Object(params) => Ok(params),
-            _ => Err(SigmaError::InvalidArgument(
-                "chat completion request parameters did not serialize to an object".to_string(),
-            )),
-        }
+impl ChatRequestParams {
+    /// Returns true when no chat parameters are set.
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
     }
 }
 
@@ -210,49 +204,31 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::config::ChatParameterMap;
-    use crate::model::ProviderId;
-    use crate::types::chat::messages::{
-        ChatCompletionRequestUserMessage, ChatCompletionRequestUserMessageContent,
-    };
+    use crate::types::chat::messages::UserMessage;
 
     #[test]
-    fn chat_parameters_match_serialized_request_without_routing_fields() {
-        let mut overrides = ChatParameterMap::new();
-        overrides.insert("metadata".to_string(), json!({"trace_id": "trace-123"}));
-
-        let request = CreateChatCompletionRequestArgs::default()
-            .messages(vec![ChatCompletionRequestMessage::User(
-                ChatCompletionRequestUserMessage {
-                    content: ChatCompletionRequestUserMessageContent::Text("hi".to_string()),
-                    name: None,
-                },
-            )])
-            .model(ModelRef::model("gpt-public"))
-            .params(
-                CreateChatCompletionRequestParamsArgs::default()
-                    .temperature(0.7)
-                    .n(2)
-                    .build()
-                    .unwrap(),
-            )
-            .provider_options(HashMap::from([(ProviderId::from("selected"), overrides)]))
-            .build()
-            .unwrap();
-        let mut expected = serde_json::to_value(&request)
-            .unwrap()
-            .as_object()
-            .unwrap()
-            .clone();
-        expected.remove("messages");
-        expected.remove("model");
-        expected.remove("provider_options");
+    fn chat_parameters_exclude_routing_fields() {
+        let request = ChatRequest::new(
+            ModelRef::model("model-public"),
+            vec![UserMessage::text("hi").into()],
+        )
+        .with_params(ChatRequestParams {
+            temperature: Some(0.7),
+            count: Some(2),
+            ..Default::default()
+        })
+        .with_provider_option(
+            ProviderId::from("selected"),
+            "metadata",
+            json!({"trace": "x"}),
+        );
 
         let params = request.chat_parameters().unwrap();
 
+        assert_eq!(params.get("temperature"), Some(&json!(0.7f32)));
+        assert_eq!(params.get("count"), Some(&json!(2)));
         assert!(!params.contains_key("messages"));
         assert!(!params.contains_key("model"));
         assert!(!params.contains_key("provider_options"));
-        assert_eq!(params, expected);
     }
 }

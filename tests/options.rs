@@ -1,7 +1,7 @@
 use sigma::types::chat::{
-    ChatCompletionAudio, ChatCompletionAudioFormat, ChatCompletionAudioVoice,
-    ChatCompletionStreamOptions, PredictionContent, PredictionContentContent, ResponseModalities,
-    ServiceTier, Verbosity, WebSearchContextSize, WebSearchOptions, WebSearchUserLocationType,
+    AudioOutput, AudioOutputFormat, AudioVoice, OutputModality, PredictionContent,
+    PredictionContentValue, ServiceTier, StreamOptions, Verbosity, WebSearchContextSize,
+    WebSearchOptions, WebSearchUserLocationType,
 };
 
 #[test]
@@ -17,7 +17,7 @@ fn verbosity_default_medium() {
 
 #[test]
 fn modalities_lowercase() {
-    let s = serde_json::to_string(&ResponseModalities::Audio).unwrap();
+    let s = serde_json::to_string(&OutputModality::Audio).unwrap();
     assert_eq!(s, r#""audio""#);
 }
 
@@ -33,7 +33,7 @@ fn web_search_context_default_medium() {
 fn web_search_options_default() {
     let v = WebSearchOptions::default();
     let s = serde_json::to_string(&v).unwrap();
-    assert_eq!(s, r#"{"search_context_size":null,"user_location":null}"#);
+    assert_eq!(s, r#"{}"#);
 }
 
 #[test]
@@ -44,40 +44,40 @@ fn user_location_type_lowercase() {
 
 #[test]
 fn prediction_content_string() {
-    let v = PredictionContent::Content(PredictionContentContent::Text("hi".into()));
+    let v = PredictionContent::Content(PredictionContentValue::Text("hi".into()));
     let s = serde_json::to_string(&v).unwrap();
     assert_eq!(s, r#"{"type":"content","content":"hi"}"#);
 }
 
 #[test]
 fn audio_voice_known_and_other() {
-    let s = serde_json::to_string(&ChatCompletionAudioVoice::Alloy).unwrap();
+    let s = serde_json::to_string(&AudioVoice::Alloy).unwrap();
     assert_eq!(s, r#""alloy""#);
-    let custom = ChatCompletionAudioVoice::Other("marin".into());
+    let custom = AudioVoice::Other("marin".into());
     let s = serde_json::to_string(&custom).unwrap();
     assert_eq!(s, r#""marin""#);
 }
 
 #[test]
 fn audio_format_lowercase() {
-    let s = serde_json::to_string(&ChatCompletionAudioFormat::Pcm16).unwrap();
+    let s = serde_json::to_string(&AudioOutputFormat::Pcm16).unwrap();
     assert_eq!(s, r#""pcm16""#);
 }
 
 #[test]
 fn chat_completion_audio_round_trip() {
-    let a = ChatCompletionAudio {
-        voice: ChatCompletionAudioVoice::Alloy,
-        format: ChatCompletionAudioFormat::Mp3,
+    let a = AudioOutput {
+        voice: AudioVoice::Alloy,
+        format: AudioOutputFormat::Mp3,
     };
     let s = serde_json::to_string(&a).unwrap();
-    let back: ChatCompletionAudio = serde_json::from_str(&s).unwrap();
+    let back: AudioOutput = serde_json::from_str(&s).unwrap();
     assert_eq!(a, back);
 }
 
 #[test]
 fn stream_options_round_trip() {
-    let o = ChatCompletionStreamOptions {
+    let o = StreamOptions {
         include_usage: Some(true),
         include_obfuscation: None,
     };

@@ -1,237 +1,204 @@
-use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
 
-use crate::error::SigmaError;
-use crate::types::Metadata;
-use crate::types::chat::content::{
-    ChatCompletionRequestMessageContentPartImage, ChatCompletionRequestMessageContentPartText,
-};
-use crate::types::chat::messages::Role;
+use crate::types::chat::messages::{ProviderContextBlock, ReasoningBlock, Role};
 use crate::types::chat::options::ServiceTier;
-use crate::types::chat::tools::ChatCompletionMessageToolCalls;
-use crate::types::shared::{
-    AnthropicServerToolUse, AnthropicThinkingBlock, CompletionTokensDetails, PromptTokensDetails,
-};
+use crate::types::chat::tools::ToolCall;
+use crate::types::shared::{CompletionTokensDetails, PromptTokensDetails};
 
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
-pub struct Logprobs {
-    pub tokens: Vec<String>,
-    pub token_logprobs: Vec<Option<f32>>,
-    pub top_logprobs: Vec<serde_json::Value>,
-    pub text_offset: Vec<u32>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum CompletionFinishReason {
-    Stop,
-    Length,
-    ContentFilter,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
-pub struct Choice {
-    pub text: String,
-    pub index: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub logprobs: Option<Logprobs>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub finish_reason: Option<CompletionFinishReason>,
-}
-
-/// Usage statistics for the completion request.
+/// Token usage statistics for a chat request.
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
-pub struct CompletionUsage {
+pub struct Usage {
+    /// Prompt/input token count.
     pub prompt_tokens: u32,
+    /// Completion/output token count.
     pub completion_tokens: u32,
+    /// Total token count.
     pub total_tokens: u32,
-    /// Anthropic cache creation input tokens, when returned by the provider.
+    /// Tokens used to create a prompt-cache entry.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_creation_input_tokens: Option<u32>,
-    /// Anthropic cache read input tokens, when returned by the provider.
+    /// Tokens read from prompt cache.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_read_input_tokens: Option<u32>,
-    /// Anthropic hosted server tool usage counts.
+    /// Hosted tool usage counters when a provider reports them.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub server_tool_use: Option<AnthropicServerToolUse>,
-    /// Anthropic inference geography, when returned.
+    pub hosted_tool_use: Option<HostedToolUsage>,
+    /// Inference geography when reported by the provider.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inference_geo: Option<String>,
-    /// Anthropic speed mode, when returned or inferred from the request.
+    /// Provider speed tier when reported or inferred.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub speed: Option<String>,
+    /// Prompt-token breakdown.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_tokens_details: Option<PromptTokensDetails>,
+    /// Completion-token breakdown.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completion_tokens_details: Option<CompletionTokensDetails>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ChatCompletionResponseMessageAnnotation {
-    UrlCitation { url_citation: UrlCitation },
+/// Hosted tool usage counters.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq, Default)]
+pub struct HostedToolUsage {
+    /// Number of hosted web search requests.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web_search_requests: Option<u32>,
+    /// Number of hosted tool-search requests.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_search_requests: Option<u32>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
+/// Annotation attached to response text.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Annotation {
+    /// URL citation for generated text.
+    UrlCitation {
+        /// Citation details.
+        url_citation: UrlCitation,
+    },
+}
+
+/// URL citation details.
+#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq, Eq)]
 pub struct UrlCitation {
-    /// The index of the last character of the URL citation in the message.
+    /// End character index of the citation span.
     pub end_index: u32,
-    /// The index of the first character of the URL citation in the message.
+    /// Start character index of the citation span.
     pub start_index: u32,
-    /// The title of the web resource.
+    /// Title of the cited resource.
     pub title: String,
-    /// The URL of the web resource.
+    /// URL of the cited resource.
     pub url: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
-pub struct ChatCompletionResponseMessageAudio {
+/// Audio data returned with an assistant response.
+#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq, Eq)]
+pub struct ResponseAudio {
+    /// Provider audio identifier.
     pub id: String,
+    /// Expiration timestamp.
     pub expires_at: u64,
+    /// Base64-encoded audio data.
     pub data: String,
+    /// Text transcript of the audio.
     pub transcript: String,
 }
 
-/// A chat completion message generated by the model.
+/// Assistant message returned by a provider.
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
-pub struct ChatCompletionResponseMessage {
+pub struct ChatResponseMessage {
+    /// Final assistant content.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
-    /// Provider reasoning text returned separately from final assistant
-    /// content.
-    ///
-    /// Gemini thinking parts are exposed here so callers can inspect reasoning
-    /// content without mixing it into the assistant's final answer.
+    /// Provider-neutral reasoning blocks.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasoning_content: Option<String>,
+    pub reasoning: Option<Vec<ReasoningBlock>>,
+    /// Refusal text.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refusal: Option<String>,
+    /// Tool calls requested by the model.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_calls: Option<Vec<ChatCompletionMessageToolCalls>>,
+    pub tool_calls: Option<Vec<ToolCall>>,
+    /// Response annotations such as URL citations.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub annotations: Option<Vec<ChatCompletionResponseMessageAnnotation>>,
+    pub annotations: Option<Vec<Annotation>>,
+    /// Message role, normally [`Role::Assistant`].
     pub role: Role,
+    /// Audio output payload.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub audio: Option<ChatCompletionResponseMessageAudio>,
-    /// Anthropic thinking blocks returned with this assistant message.
+    pub audio: Option<ResponseAudio>,
+    /// Opaque provider-owned context required for same-provider replay.
     ///
-    /// These blocks are not merged into `content` so applications can replay
-    /// Claude conversation history with native thinking signatures intact.
+    /// This is not portable model content. Preserve it only when continuing a
+    /// conversation with the same provider that produced the response.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub thinking_blocks: Option<Vec<AnthropicThinkingBlock>>,
-    /// Provider-native metadata needed to preserve advanced provider context.
-    ///
-    /// Gemini uses this for thought signatures and server-side tool invocation
-    /// context. Applications should treat the JSON shape as provider-specific.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider_specific_fields: Option<serde_json::Value>,
+    pub provider_context: Option<Vec<ProviderContextBlock>>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
+/// Reason a model stopped generating.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FinishReason {
+    /// A natural stop condition or stop sequence was reached.
     Stop,
+    /// Token or length limit was reached.
     Length,
+    /// The model produced tool calls.
     ToolCalls,
+    /// Provider content filters stopped the response.
     ContentFilter,
 }
 
+/// Top log probability alternative for a token.
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
-pub struct TopLogprobs {
+pub struct TokenTopLogprob {
+    /// Token text.
     pub token: String,
+    /// Log probability.
     pub logprob: f32,
+    /// Token bytes when provided.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub bytes: Option<Vec<u8>>,
 }
 
+/// Log probability data for one generated token.
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
-pub struct ChatCompletionTokenLogprob {
+pub struct TokenLogprob {
+    /// Token text.
     pub token: String,
+    /// Token log probability.
     pub logprob: f32,
+    /// Token bytes when provided.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub bytes: Option<Vec<u8>>,
-    pub top_logprobs: Vec<TopLogprobs>,
+    /// Alternative token probabilities.
+    pub top_logprobs: Vec<TokenTopLogprob>,
 }
 
+/// Log probability data for a chat choice.
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
-pub struct ChatChoiceLogprobs {
-    pub content: Option<Vec<ChatCompletionTokenLogprob>>,
-    pub refusal: Option<Vec<ChatCompletionTokenLogprob>>,
+pub struct ChoiceLogprobs {
+    /// Content token log probabilities.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<Vec<TokenLogprob>>,
+    /// Refusal token log probabilities.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<Vec<TokenLogprob>>,
 }
 
+/// One choice in a chat response.
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct ChatChoice {
+    /// Choice index.
     pub index: u32,
-    pub message: ChatCompletionResponseMessage,
+    /// Assistant message.
+    pub message: ChatResponseMessage,
+    /// Finish reason when known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finish_reason: Option<FinishReason>,
+    /// Token log probability details.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub logprobs: Option<ChatChoiceLogprobs>,
+    pub logprobs: Option<ChoiceLogprobs>,
 }
 
-/// Represents a chat completion response returned by the model.
+/// Provider-neutral chat response returned by sigma.
 #[derive(Debug, Deserialize, Clone, PartialEq, Serialize)]
-pub struct CreateChatCompletionResponse {
+pub struct ChatResponse {
+    /// Provider response id.
     pub id: String,
+    /// Generated choices.
     pub choices: Vec<ChatChoice>,
+    /// Unix timestamp supplied by the provider or synthesized by sigma.
     pub created: u32,
+    /// Provider model that handled the request.
     pub model: String,
+    /// Service tier used by the provider when reported.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<ServiceTier>,
+    /// Response object type.
     pub object: String,
-    pub usage: Option<CompletionUsage>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ContentPart {
-    Text(ChatCompletionRequestMessageContentPartText),
-    ImageUrl(ChatCompletionRequestMessageContentPartImage),
-}
-
-/// A chat completion message with additional fields for listing.
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
-pub struct ChatCompletionMessageListItem {
-    pub id: String,
+    /// Token usage details.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub content_parts: Option<Vec<ContentPart>>,
-    #[serde(flatten)]
-    pub message: ChatCompletionResponseMessage,
-}
-
-/// An object representing a list of chat completion messages.
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
-pub struct ChatCompletionMessageList {
-    pub object: String,
-    pub data: Vec<ChatCompletionMessageListItem>,
-    pub first_id: Option<String>,
-    pub last_id: Option<String>,
-    pub has_more: bool,
-}
-
-/// An object representing a list of Chat Completions.
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
-pub struct ChatCompletionList {
-    pub object: String,
-    pub data: Vec<CreateChatCompletionResponse>,
-    pub first_id: Option<String>,
-    pub last_id: Option<String>,
-    pub has_more: bool,
-}
-
-/// Response when deleting a chat completion.
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
-pub struct ChatCompletionDeleted {
-    pub object: String,
-    pub id: String,
-    pub deleted: bool,
-}
-
-/// Request to update a chat completion.
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default, Builder)]
-#[builder(name = "UpdateChatCompletionRequestArgs")]
-#[builder(pattern = "mutable")]
-#[builder(setter(into, strip_option), default)]
-#[builder(derive(Debug))]
-#[builder(build_fn(error = "SigmaError"))]
-pub struct UpdateChatCompletionRequest {
-    pub metadata: Metadata,
+    pub usage: Option<Usage>,
 }

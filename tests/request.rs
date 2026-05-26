@@ -1,78 +1,55 @@
-use std::collections::HashMap;
-
 use serde_json::json;
 use sigma::types::chat::{
-    CacheControl, CacheControlTtl, ChatCompletionRequestMessage, ChatCompletionRequestUserMessage,
-    ChatCompletionRequestUserMessageContent, CreateChatCompletionRequest,
-    CreateChatCompletionRequestArgs, CreateChatCompletionRequestParamsArgs, Prompt,
-    StopConfiguration,
+    CacheControl, CacheControlTtl, ChatRequest, ChatRequestParams, StopConfiguration, UserMessage,
 };
-use sigma::{ChatParameterMap, ProviderId};
-
-#[test]
-fn prompt_untagged_string() {
-    let s = serde_json::to_string(&Prompt::String("hi".into())).unwrap();
-    assert_eq!(s, r#""hi""#);
-}
-
-#[test]
-fn prompt_untagged_string_array() {
-    let s = serde_json::to_string(&Prompt::StringArray(vec!["a".into(), "b".into()])).unwrap();
-    assert_eq!(s, r#"["a","b"]"#);
-}
+use sigma::{ChatParameterMap, ModelRef, ProviderId};
 
 #[test]
 fn stop_configuration_untagged() {
     let s = serde_json::to_string(&StopConfiguration::String("\n".into())).unwrap();
     assert_eq!(s, r#""\n""#);
+
     let s = serde_json::to_string(&StopConfiguration::StringArray(vec!["a".into()])).unwrap();
     assert_eq!(s, r#"["a"]"#);
 }
 
 #[test]
-fn create_request_minimal_skips_none() {
-    let user = ChatCompletionRequestUserMessage {
-        content: ChatCompletionRequestUserMessageContent::Text("hi".into()),
-        name: None,
-    };
-    let req = CreateChatCompletionRequestArgs::default()
-        .messages(vec![ChatCompletionRequestMessage::User(user)])
-        .model("gpt-4o")
-        .build()
-        .unwrap();
+fn chat_request_minimal_skips_empty_params() {
+    let req = ChatRequest::new(
+        ModelRef::model("gpt-4o"),
+        vec![UserMessage::text("hi").into()],
+    );
+
     let s = serde_json::to_string(&req).unwrap();
+
     assert_eq!(
         s,
-        r#"{"messages":[{"role":"user","content":"hi"}],"model":"gpt-4o"}"#
+        r#"{"messages":[{"role":"user","content":{"text":"hi"}}],"model":"gpt-4o"}"#
     );
 }
 
 #[test]
-fn create_request_round_trip() {
-    let json =
-        r#"{"messages":[{"role":"user","content":"hi"}],"model":"gpt-4o","temperature":0.7}"#;
-    let req: CreateChatCompletionRequest = serde_json::from_str(json).unwrap();
-    assert_eq!(req.model, "gpt-4o");
+fn chat_request_round_trips_nested_params() {
+    let json = r#"{"messages":[{"role":"user","content":{"text":"hi"}}],"model":"gpt-4o","params":{"temperature":0.7}}"#;
+
+    let req: ChatRequest = serde_json::from_str(json).unwrap();
+
+    assert_eq!(req.model, ModelRef::model("gpt-4o"));
     assert_eq!(req.params.temperature, Some(0.7));
 }
 
 #[test]
-fn create_request_provider_options_round_trips_as_provider_body_overrides() {
+fn chat_request_provider_options_round_trip_as_provider_body_overrides() {
     let mut zhipu_overrides = ChatParameterMap::new();
     zhipu_overrides.insert("model".to_string(), json!("glm-4-plus"));
     zhipu_overrides.insert("metadata".to_string(), json!({"trace_id": "trace-123"}));
 
-    let req = CreateChatCompletionRequestArgs::default()
-        .messages(vec![ChatCompletionRequestMessage::User(
-            ChatCompletionRequestUserMessage::from("hi"),
-        )])
-        .model("gpt-4o")
-        .provider_options(HashMap::from([(
-            ProviderId::from("zhipu"),
-            zhipu_overrides.clone(),
-        )]))
-        .build()
-        .unwrap();
+    let mut req = ChatRequest::new(
+        ModelRef::model("gpt-4o"),
+        vec![UserMessage::text("hi").into()],
+    );
+    req.provider_options
+        .insert(ProviderId::from("zhipu"), zhipu_overrides.clone());
 
     let value = serde_json::to_value(&req).unwrap();
     assert_eq!(
@@ -87,7 +64,7 @@ fn create_request_provider_options_round_trips_as_provider_body_overrides() {
         })
     );
 
-    let back: CreateChatCompletionRequest = serde_json::from_value(value).unwrap();
+    let back: ChatRequest = serde_json::from_value(value).unwrap();
     assert_eq!(
         back.provider_options.get(&ProviderId::from("zhipu")),
         Some(&zhipu_overrides)
@@ -95,49 +72,42 @@ fn create_request_provider_options_round_trips_as_provider_body_overrides() {
 }
 
 #[test]
-fn create_request_params_flatten_into_request_json() {
-    let params = CreateChatCompletionRequestParamsArgs::default()
-        .temperature(0.7)
-        .n(2)
-        .build()
-        .unwrap();
-    let req = CreateChatCompletionRequestArgs::default()
-        .messages(vec![ChatCompletionRequestMessage::User(
-            ChatCompletionRequestUserMessage::from("hi"),
-        )])
-        .model("gpt-4o")
-        .params(params)
-        .build()
-        .unwrap();
+fn chat_request_params_serialize_as_semantic_params_object() {
+    let req = ChatRequest::new(
+        ModelRef::model("gpt-4o"),
+        vec![UserMessage::text("hi").into()],
+    )
+    .with_params(ChatRequestParams {
+        temperature: Some(0.7),
+        count: Some(2),
+        ..Default::default()
+    });
 
     let value = serde_json::to_value(&req).unwrap();
 
-    assert_eq!(value["temperature"], json!(0.7f32));
-    assert_eq!(value["n"], json!(2));
-    assert!(value.get("params").is_none());
+    assert_eq!(value["params"]["temperature"], json!(0.7f32));
+    assert_eq!(value["params"]["count"], json!(2));
+    assert!(value.get("temperature").is_none());
+    assert!(value.get("count").is_none());
 }
 
 #[test]
-fn create_request_params_serializes_typed_cache_control() {
-    let params = CreateChatCompletionRequestParamsArgs::default()
-        .cache_control(CacheControl::ephemeral_with_ttl(
+fn chat_request_params_serializes_typed_cache_control() {
+    let req = ChatRequest::new(
+        ModelRef::model("claude-public"),
+        vec![UserMessage::text("hi").into()],
+    )
+    .with_params(ChatRequestParams {
+        cache_control: Some(CacheControl::ephemeral_with_ttl(
             CacheControlTtl::FiveMinutes,
-        ))
-        .build()
-        .unwrap();
-    let req = CreateChatCompletionRequestArgs::default()
-        .messages(vec![ChatCompletionRequestMessage::User(
-            ChatCompletionRequestUserMessage::from("hi"),
-        )])
-        .model("claude-public")
-        .params(params)
-        .build()
-        .unwrap();
+        )),
+        ..Default::default()
+    });
 
     let value = serde_json::to_value(&req).unwrap();
 
     assert_eq!(
-        value["cache_control"],
+        value["params"]["cache_control"],
         json!({"type": "ephemeral", "ttl": "5m"})
     );
 }

@@ -4,15 +4,9 @@ use futures_util::StreamExt;
 use http::StatusCode;
 use serde_json::{Value, json};
 use sigma::types::chat::{
-    CacheControl, ChatCompletionNamedToolChoice, ChatCompletionRequestMessage,
-    ChatCompletionRequestMessageContentPartFile, ChatCompletionRequestMessageContentPartImage,
-    ChatCompletionRequestMessageContentPartText, ChatCompletionRequestSystemMessage,
-    ChatCompletionRequestSystemMessageContent, ChatCompletionRequestSystemMessageContentPart,
-    ChatCompletionRequestUserMessage, ChatCompletionRequestUserMessageContent,
-    ChatCompletionRequestUserMessageContentPart, ChatCompletionTool,
-    ChatCompletionToolChoiceOption, ChatCompletionTools, CreateChatCompletionRequest,
-    CreateChatCompletionRequestArgs, CreateChatCompletionRequestParamsArgs, FileObject,
-    FinishReason,
+    AssistantMessage, CacheControl, ChatRequest, ChatRequestParams, FileInput, FilePart,
+    FinishReason, FunctionTool, ImagePart, NamedFunctionToolChoice, SystemMessage, TextContent,
+    TextPart, ToolChoice, ToolDefinition, UserContent, UserContentPart, UserMessage,
 };
 use sigma::types::shared::{FunctionName, FunctionObject, ImageUrl, ResponseFormat};
 use sigma::{
@@ -62,21 +56,14 @@ fn provider_config_map(value: Value) -> ProviderConfigMap {
     }
 }
 
-fn request(model: ModelRef) -> CreateChatCompletionRequest {
-    CreateChatCompletionRequestArgs::default()
-        .messages(vec![ChatCompletionRequestMessage::User(
-            ChatCompletionRequestUserMessage::from("hello"),
-        )])
-        .model(model)
-        .params(
-            CreateChatCompletionRequestParamsArgs::default()
-                .temperature(0.2f32)
-                .max_tokens(128u32)
-                .build()
-                .unwrap(),
-        )
-        .build()
-        .unwrap()
+fn request(model: ModelRef) -> ChatRequest {
+    ChatRequest::new(model, vec![UserMessage::from("hello").into()]).with_params(
+        ChatRequestParams {
+            temperature: Some(0.2f32),
+            max_tokens: Some(128),
+            ..Default::default()
+        },
+    )
 }
 
 fn anthropic_response(content: Vec<Value>, stop_reason: &str) -> Value {
@@ -164,38 +151,35 @@ async fn anthropic_create_posts_messages_body_and_headers() {
         Value::Null,
     ))
     .unwrap();
-    let request = CreateChatCompletionRequestArgs::default()
-        .messages(vec![
-            ChatCompletionRequestMessage::System(ChatCompletionRequestSystemMessage {
-                content: ChatCompletionRequestSystemMessageContent::Text("Be terse.".to_string()),
+    let request = ChatRequest::new(
+        ModelRef::model("claude-public"),
+        vec![
+            SystemMessage {
+                content: TextContent::Text("Be terse.".to_string()),
                 name: None,
-            }),
-            ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
-                content: ChatCompletionRequestUserMessageContent::Array(vec![
-                    ChatCompletionRequestUserMessageContentPart::Text("Describe it.".into()),
-                    ChatCompletionRequestUserMessageContentPart::ImageUrl(
-                        sigma::types::chat::ChatCompletionRequestMessageContentPartImage {
-                            image_url: ImageUrl {
-                                url: "data:image/png;base64,QUJD".to_string(),
-                                detail: None,
-                            },
-                            cache_control: None,
+            }
+            .into(),
+            UserMessage {
+                content: UserContent::Parts(vec![
+                    UserContentPart::Text("Describe it.".into()),
+                    UserContentPart::Image(sigma::types::chat::ImagePart {
+                        image: ImageUrl {
+                            url: "data:image/png;base64,QUJD".to_string(),
+                            detail: None,
                         },
-                    ),
+                        cache_control: None,
+                    }),
                 ]),
                 name: None,
-            }),
-        ])
-        .model(ModelRef::model("claude-public"))
-        .params(
-            CreateChatCompletionRequestParamsArgs::default()
-                .temperature(0.2f32)
-                .max_completion_tokens(32u32)
-                .build()
-                .unwrap(),
-        )
-        .build()
-        .unwrap();
+            }
+            .into(),
+        ],
+    )
+    .with_params(ChatRequestParams {
+        temperature: Some(0.2f32),
+        max_completion_tokens: Some(32),
+        ..Default::default()
+    });
 
     let response = client.chat().create(&request).await.unwrap();
 
@@ -248,56 +232,47 @@ async fn anthropic_create_maps_content_part_cache_control() {
         Value::Null,
     ))
     .unwrap();
-    let request = CreateChatCompletionRequestArgs::default()
-        .messages(vec![
-            ChatCompletionRequestMessage::System(ChatCompletionRequestSystemMessage {
-                content: ChatCompletionRequestSystemMessageContent::Array(vec![
-                    ChatCompletionRequestSystemMessageContentPart::Text(
-                        ChatCompletionRequestMessageContentPartText {
-                            text: "Use cached policy.".to_string(),
-                            cache_control: Some(CacheControl::ephemeral()),
+    let request = ChatRequest::new(
+        ModelRef::model("claude-public"),
+        vec![
+            SystemMessage {
+                content: TextContent::Parts(vec![TextPart {
+                    text: "Use cached policy.".to_string(),
+                    cache_control: Some(CacheControl::ephemeral()),
+                }]),
+                name: None,
+            }
+            .into(),
+            UserMessage {
+                content: UserContent::Parts(vec![
+                    UserContentPart::Text(TextPart {
+                        text: "Cached user text.".to_string(),
+                        cache_control: Some(CacheControl::ephemeral()),
+                    }),
+                    UserContentPart::Image(ImagePart {
+                        image: ImageUrl {
+                            url: "data:image/png;base64,QUJD".to_string(),
+                            detail: None,
                         },
-                    ),
+                        cache_control: Some(CacheControl::ephemeral()),
+                    }),
+                    UserContentPart::File(FilePart {
+                        file: FileInput {
+                            id: Some("file_123".to_string()),
+                            data: None,
+                            filename: None,
+                            media_type: None,
+                            detail: None,
+                            video_metadata: None,
+                        },
+                        cache_control: Some(CacheControl::ephemeral()),
+                    }),
                 ]),
                 name: None,
-            }),
-            ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
-                content: ChatCompletionRequestUserMessageContent::Array(vec![
-                    ChatCompletionRequestUserMessageContentPart::Text(
-                        ChatCompletionRequestMessageContentPartText {
-                            text: "Cached user text.".to_string(),
-                            cache_control: Some(CacheControl::ephemeral()),
-                        },
-                    ),
-                    ChatCompletionRequestUserMessageContentPart::ImageUrl(
-                        ChatCompletionRequestMessageContentPartImage {
-                            image_url: ImageUrl {
-                                url: "data:image/png;base64,QUJD".to_string(),
-                                detail: None,
-                            },
-                            cache_control: Some(CacheControl::ephemeral()),
-                        },
-                    ),
-                    ChatCompletionRequestUserMessageContentPart::File(
-                        ChatCompletionRequestMessageContentPartFile {
-                            file: FileObject {
-                                file_id: Some("file_123".to_string()),
-                                file_data: None,
-                                filename: None,
-                                format: None,
-                                detail: None,
-                                video_metadata: None,
-                            },
-                            cache_control: Some(CacheControl::ephemeral()),
-                        },
-                    ),
-                ]),
-                name: None,
-            }),
-        ])
-        .model(ModelRef::model("claude-public"))
-        .build()
-        .unwrap();
+            }
+            .into(),
+        ],
+    );
 
     client.chat().create(&request).await.unwrap();
 
@@ -475,7 +450,7 @@ async fn anthropic_create_maps_tools_tool_choice_and_reverses_sanitized_tool_nam
     ))
     .unwrap();
     let mut request = request(ModelRef::model("claude-public"));
-    request.params.tools = Some(vec![ChatCompletionTools::Function(ChatCompletionTool {
+    request.params.tools = Some(vec![ToolDefinition::Function(FunctionTool {
         function: FunctionObject {
             name: "weather.lookup".to_string(),
             description: Some("Get weather".to_string()),
@@ -487,13 +462,11 @@ async fn anthropic_create_maps_tools_tool_choice_and_reverses_sanitized_tool_nam
             strict: Some(true),
         },
     })]);
-    request.params.tool_choice = Some(ChatCompletionToolChoiceOption::Function(
-        ChatCompletionNamedToolChoice {
-            function: FunctionName {
-                name: "weather.lookup".to_string(),
-            },
+    request.params.tool_choice = Some(ToolChoice::Function(NamedFunctionToolChoice {
+        function: FunctionName {
+            name: "weather.lookup".to_string(),
         },
-    ));
+    }));
     request.params.parallel_tool_calls = Some(false);
 
     let response = client.chat().create(&request).await.unwrap();
@@ -507,6 +480,92 @@ async fn anthropic_create_maps_tools_tool_choice_and_reverses_sanitized_tool_nam
         serde_json::to_value(tool_call).unwrap()["function"]["name"],
         "weather.lookup"
     );
+}
+
+#[tokio::test]
+async fn anthropic_create_preserves_provider_context_for_assistant_replay() {
+    let server = MockServer::start().await;
+    let mut body = anthropic_response(
+        vec![
+            json!({
+                "type": "server_tool_use",
+                "id": "srv_123",
+                "name": "web_search",
+                "input": {"query": "rust sdk"}
+            }),
+            json!({
+                "type": "web_search_tool_result",
+                "tool_use_id": "srv_123",
+                "content": [{"title": "Rust", "url": "https://example.test/rust"}]
+            }),
+            json!({
+                "type": "compaction",
+                "content": "conversation summary"
+            }),
+        ],
+        "end_turn",
+    );
+    body.as_object_mut().unwrap().insert(
+        "context_management".to_string(),
+        json!({"edits": [{"type": "context_management_compact"}]}),
+    );
+    body.as_object_mut()
+        .unwrap()
+        .insert("container".to_string(), json!({"type": "auto"}));
+    mount_anthropic_response(&server, body).await;
+    let client = Client::build(anthropic_config(
+        "anthropic-replay",
+        Some(server.uri()),
+        Some(SecretString::from("sk-ant-test")),
+        HashMap::new(),
+        Value::Null,
+    ))
+    .unwrap();
+
+    let response = client
+        .chat()
+        .create(&request(ModelRef::model("claude-public")))
+        .await
+        .unwrap();
+
+    let provider_context = response.choices[0]
+        .message
+        .provider_context
+        .as_ref()
+        .unwrap();
+    assert!(provider_context.iter().any(|block| {
+        block.kind == "anthropic.content_block" && block.value["type"] == "web_search_tool_result"
+    }));
+    assert!(provider_context.iter().any(
+        |block| block.kind == "anthropic.content_block" && block.value["type"] == "compaction"
+    ));
+    assert!(provider_context.iter().any(|block| {
+        block.kind == "anthropic.response_field" && block.value["name"] == "context_management"
+    }));
+    assert!(
+        !provider_context
+            .iter()
+            .any(|block| block.value["type"] == "server_tool_use")
+    );
+
+    let follow_up = ChatRequest::new(
+        ModelRef::model("claude-public"),
+        vec![
+            AssistantMessage {
+                provider_context: Some(provider_context.clone()),
+                ..Default::default()
+            }
+            .into(),
+            UserMessage::from("continue").into(),
+        ],
+    );
+
+    client.chat().create(&follow_up).await.unwrap();
+
+    let body = last_body(&server).await;
+    let assistant_content = body["messages"][0]["content"].as_array().unwrap();
+    assert_eq!(assistant_content[0]["type"], "compaction");
+    assert_eq!(assistant_content[1]["type"], "web_search_tool_result");
 }
 
 #[tokio::test]
@@ -549,13 +608,7 @@ async fn anthropic_create_maps_response_format_reasoning_and_usage() {
     assert_eq!(response.usage.as_ref().unwrap().prompt_tokens, 15);
     assert_eq!(response.usage.as_ref().unwrap().completion_tokens, 4);
     assert_eq!(
-        response.choices[0]
-            .message
-            .thinking_blocks
-            .as_ref()
-            .unwrap()[0]
-            .thinking
-            .as_deref(),
+        response.choices[0].message.reasoning.as_ref().unwrap()[0].text_value(),
         Some("I will answer.")
     );
     assert!(response.choices[0].message.annotations.is_some());

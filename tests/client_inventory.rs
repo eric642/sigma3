@@ -7,11 +7,8 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sigma::types::chat::{
-    ChatChoiceStream, ChatCompletionRequestDeveloperMessage,
-    ChatCompletionRequestDeveloperMessageContent, ChatCompletionRequestMessage,
-    ChatCompletionRequestUserMessage, ChatCompletionStreamResponseDelta,
-    CreateChatCompletionRequestArgs, CreateChatCompletionResponse,
-    CreateChatCompletionStreamResponse,
+    AssistantDelta, ChatMessage, ChatRequest, ChatResponse, ChatStreamChoice, ChatStreamChunk,
+    DeveloperMessage, TextContent, UserMessage,
 };
 use sigma::{
     ChatAdapterContext, ChatAdapterRequest, ChatCompletionAdapter, ChatParamConfig,
@@ -164,7 +161,7 @@ fn fake_chat_body_value(
     provider: &ProviderId,
     params: &ChatParameterMap,
     provider_model: &ModelName,
-    messages: &[ChatCompletionRequestMessage],
+    messages: &[ChatMessage],
     provider_options: Option<&ChatParameterMap>,
 ) -> SigmaResult<Value> {
     let mut body = serde_json::Map::new();
@@ -192,21 +189,14 @@ fn fake_chat_body_value(
     Ok(Value::Object(body))
 }
 
-fn fake_messages_to_value(
-    provider: &ProviderId,
-    messages: &[ChatCompletionRequestMessage],
-) -> SigmaResult<Value> {
+fn fake_messages_to_value(provider: &ProviderId, messages: &[ChatMessage]) -> SigmaResult<Value> {
     let translated = messages
         .iter()
         .map(|message| match message {
-            ChatCompletionRequestMessage::Developer(message) => {
+            ChatMessage::Developer(message) => {
                 let content = match &message.content {
-                    ChatCompletionRequestDeveloperMessageContent::Text(text) => {
-                        Value::String(text.clone())
-                    }
-                    ChatCompletionRequestDeveloperMessageContent::Array(parts) => {
-                        serde_json::to_value(parts)?
-                    }
+                    TextContent::Text(text) => Value::String(text.clone()),
+                    TextContent::Parts(parts) => serde_json::to_value(parts)?,
                 };
 
                 Ok(json!({
@@ -226,13 +216,13 @@ fn fake_messages_to_value(
 }
 
 impl ChatCompletionAdapter for FakeChatAdapter {
-    fn supported_openai_params(&self) -> Vec<&'static str> {
-        push_event(&self.id, "supported_openai_params");
+    fn supported_chat_params(&self) -> Vec<&'static str> {
+        push_event(&self.id, "supported_chat_params");
         vec!["temperature", "stream", "max_completion_tokens"]
     }
 
-    fn map_openai_params(&self, params: ChatParameterMap) -> SigmaResult<ChatParameterMap> {
-        push_event(&self.id, "map_openai_params");
+    fn map_chat_params(&self, params: ChatParameterMap) -> SigmaResult<ChatParameterMap> {
+        push_event(&self.id, "map_chat_params");
         Ok(params)
     }
 
@@ -286,7 +276,7 @@ impl ChatCompletionAdapter for FakeChatAdapter {
         &self,
         _context: &ChatAdapterContext<'_>,
         response: ProviderResponse,
-    ) -> SigmaResult<CreateChatCompletionResponse> {
+    ) -> SigmaResult<ChatResponse> {
         push_event(&self.id, "transform_response");
         serde_json::from_slice(&response.body).map_err(|err| SigmaError::ProviderResponse {
             provider: self.id.clone(),
@@ -458,19 +448,17 @@ fn error_body() -> Value {
     })
 }
 
-fn stream_chunk(id: &str, model: &str, content: &str) -> CreateChatCompletionStreamResponse {
-    CreateChatCompletionStreamResponse {
+fn stream_chunk(id: &str, model: &str, content: &str) -> ChatStreamChunk {
+    ChatStreamChunk {
         id: id.to_string(),
-        choices: vec![ChatChoiceStream {
+        choices: vec![ChatStreamChoice {
             index: 0,
-            delta: ChatCompletionStreamResponseDelta {
+            delta: AssistantDelta {
                 content: Some(content.to_string()),
-                reasoning_content: None,
+                reasoning: None,
                 tool_calls: None,
                 role: None,
                 refusal: None,
-                thinking_blocks: None,
-                provider_specific_fields: None,
             },
             finish_reason: None,
             logprobs: None,
@@ -638,14 +626,8 @@ fn provider_init_deserialize_config_rejects_unknown_provider_config_fields() {
     ));
 }
 
-fn request(model: ModelRef) -> sigma::types::chat::CreateChatCompletionRequest {
-    CreateChatCompletionRequestArgs::default()
-        .messages(vec![ChatCompletionRequestMessage::User(
-            ChatCompletionRequestUserMessage::from("hello"),
-        )])
-        .model(model)
-        .build()
-        .unwrap()
+fn request(model: ModelRef) -> sigma::types::chat::ChatRequest {
+    ChatRequest::new(model, vec![UserMessage::from("hello").into()])
 }
 
 fn client(
@@ -931,8 +913,8 @@ async fn create_runs_adapter_lifecycle_in_order() {
     assert_eq!(
         take_events(provider_id),
         vec![
-            "supported_openai_params",
-            "map_openai_params",
+            "supported_chat_params",
+            "map_chat_params",
             "validate_environment",
             "endpoint",
             "transform_request",
@@ -978,8 +960,8 @@ async fn create_lets_adapter_transform_non_success_status_into_business_error() 
     assert_eq!(
         take_events(provider_id),
         vec![
-            "supported_openai_params",
-            "map_openai_params",
+            "supported_chat_params",
+            "map_chat_params",
             "validate_environment",
             "endpoint",
             "transform_request",
@@ -1001,12 +983,12 @@ async fn create_rejects_unsupported_params_when_policy_rejects() {
     );
 
     let mut request = request(ModelRef::model("gpt-public"));
-    request.params.n = Some(2);
+    request.params.count = Some(2);
     let err = client.chat().create(&request).await.unwrap_err();
 
     assert!(matches!(
         err,
-        SigmaError::UnsupportedParams { params, .. } if params == vec!["n"]
+        SigmaError::UnsupportedParams { params, .. } if params == vec!["count"]
     ));
 }
 
@@ -1017,10 +999,10 @@ async fn create_drops_unsupported_params_when_policy_drops() {
     let client = client("p-drop", &server, Value::Null, ParamPolicy::DropUnsupported);
 
     let mut request = request(ModelRef::model("gpt-public"));
-    request.params.n = Some(2);
+    request.params.count = Some(2);
     client.chat().create(&request).await.unwrap();
 
-    assert!(last_body(&server).await.get("n").is_none());
+    assert!(last_body(&server).await.get("count").is_none());
 }
 
 #[tokio::test]
@@ -1032,16 +1014,16 @@ async fn create_allows_provider_configured_params() {
         &server,
         Value::Null,
         ChatParamConfig {
-            allow: vec!["n".to_string()],
+            allow: vec!["count".to_string()],
             ..ChatParamConfig::default()
         },
     );
 
     let mut request = request(ModelRef::model("gpt-public"));
-    request.params.n = Some(2);
+    request.params.count = Some(2);
     client.chat().create(&request).await.unwrap();
 
-    assert_eq!(last_body(&server).await["n"], 2);
+    assert_eq!(last_body(&server).await["count"], 2);
 }
 
 #[tokio::test]
@@ -1053,16 +1035,16 @@ async fn create_drops_provider_configured_top_level_params_before_validation() {
         &server,
         Value::Null,
         ChatParamConfig {
-            drop: vec!["n".to_string()],
+            drop: vec!["count".to_string()],
             ..ChatParamConfig::default()
         },
     );
 
     let mut request = request(ModelRef::model("gpt-public"));
-    request.params.n = Some(2);
+    request.params.count = Some(2);
     client.chat().create(&request).await.unwrap();
 
-    assert!(last_body(&server).await.get("n").is_none());
+    assert!(last_body(&server).await.get("count").is_none());
 }
 
 #[tokio::test]
@@ -1143,7 +1125,7 @@ async fn create_uses_provider_model_specific_param_rules() {
             models: BTreeMap::from([(
                 ModelName::from("provider-gpt"),
                 ChatParamModelConfig {
-                    allow: vec!["n".to_string()],
+                    allow: vec!["count".to_string()],
                     ..ChatParamModelConfig::default()
                 },
             )]),
@@ -1161,16 +1143,16 @@ async fn create_uses_provider_model_specific_param_rules() {
     let client = Client::build(config).unwrap();
 
     let mut allowed = request(ModelRef::model("gpt-public"));
-    allowed.params.n = Some(2);
+    allowed.params.count = Some(2);
     client.chat().create(&allowed).await.unwrap();
 
     let mut rejected = request(ModelRef::model("gpt-strict"));
-    rejected.params.n = Some(2);
+    rejected.params.count = Some(2);
     let err = client.chat().create(&rejected).await.unwrap_err();
 
     assert!(matches!(
         err,
-        SigmaError::UnsupportedParams { params, .. } if params == vec!["n"]
+        SigmaError::UnsupportedParams { params, .. } if params == vec!["count"]
     ));
 }
 
@@ -1186,7 +1168,7 @@ async fn provider_model_direct_routing_uses_provider_model_param_rules() {
             models: BTreeMap::from([(
                 ModelName::from("direct-model"),
                 ChatParamModelConfig {
-                    allow: vec!["n".to_string()],
+                    allow: vec!["count".to_string()],
                     ..ChatParamModelConfig::default()
                 },
             )]),
@@ -1198,12 +1180,12 @@ async fn provider_model_direct_routing_uses_provider_model_param_rules() {
         ProviderId::from("p-direct-model-rules"),
         "direct-model",
     ));
-    request.params.n = Some(2);
+    request.params.count = Some(2);
     client.chat().create(&request).await.unwrap();
 
     let body = last_body(&server).await;
     assert_eq!(body["model"], "direct-model");
-    assert_eq!(body["n"], 2);
+    assert_eq!(body["count"], 2);
 }
 
 #[tokio::test]
@@ -1299,18 +1281,16 @@ async fn create_lets_adapter_transform_developer_messages_in_request_body() {
         ParamPolicy::RejectUnsupported,
     );
 
-    let request = CreateChatCompletionRequestArgs::default()
-        .messages(vec![ChatCompletionRequestMessage::Developer(
-            ChatCompletionRequestDeveloperMessage {
-                content: ChatCompletionRequestDeveloperMessageContent::Text(
-                    "developer instruction".to_string(),
-                ),
+    let request = ChatRequest::new(
+        ModelRef::model("gpt-public"),
+        vec![
+            DeveloperMessage {
+                content: TextContent::Text("developer instruction".to_string()),
                 name: None,
-            },
-        )])
-        .model(ModelRef::model("gpt-public"))
-        .build()
-        .unwrap();
+            }
+            .into(),
+        ],
+    );
 
     client.chat().create(&request).await.unwrap();
 
@@ -1374,8 +1354,8 @@ async fn create_stream_injects_stream_param_for_native_streams() {
     assert_eq!(
         take_events(provider_id),
         vec![
-            "supported_openai_params",
-            "map_openai_params",
+            "supported_chat_params",
+            "map_chat_params",
             "validate_environment",
             "endpoint",
             "transform_request",
@@ -1410,8 +1390,8 @@ async fn create_stream_can_fake_stream_from_non_stream_response() {
     assert_eq!(
         take_events(provider_id),
         vec![
-            "supported_openai_params",
-            "map_openai_params",
+            "supported_chat_params",
+            "map_chat_params",
             "validate_environment",
             "endpoint",
             "transform_request",
@@ -1460,8 +1440,8 @@ async fn create_stream_fake_lets_adapter_transform_non_success_status_into_busin
     assert_eq!(
         take_events(provider_id),
         vec![
-            "supported_openai_params",
-            "map_openai_params",
+            "supported_chat_params",
+            "map_chat_params",
             "validate_environment",
             "endpoint",
             "transform_request",
@@ -1534,8 +1514,8 @@ async fn create_stream_native_lets_adapter_transform_non_success_status_into_bus
     assert_eq!(
         take_events(provider_id),
         vec![
-            "supported_openai_params",
-            "map_openai_params",
+            "supported_chat_params",
+            "map_chat_params",
             "validate_environment",
             "endpoint",
             "transform_request",

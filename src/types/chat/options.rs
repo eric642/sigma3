@@ -1,139 +1,196 @@
 use serde::{Deserialize, Serialize};
 
-use crate::types::chat::content::ChatCompletionRequestMessageContentPartText;
+use crate::types::chat::content::TextPart;
 
-#[derive(Clone, Serialize, Debug, Deserialize, PartialEq)]
+/// Provider service tier requested for a chat call.
+#[derive(Clone, Copy, Serialize, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ServiceTier {
+    /// Let the provider choose the tier.
     Auto,
+    /// Provider default tier.
     Default,
+    /// Lower-latency flexible tier.
     Flex,
+    /// Scale tier.
     Scale,
+    /// Priority tier.
     Priority,
 }
 
-/// The retention policy for the prompt cache.
-///
-/// For most models the default is `in_memory`. For `gpt-5.5`, `gpt-5.5-pro`,
-/// and all future models, the default is `24h` and `in_memory` is not supported.
-#[derive(Clone, Serialize, Debug, Deserialize, PartialEq)]
+/// Retention policy for prompt-cache entries.
+#[derive(Clone, Copy, Serialize, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum PromptCacheRetention {
-    #[serde(rename = "in_memory")]
+    /// Keep cache entries only in memory when supported.
     InMemory,
+    /// Keep cache entries for twenty-four hours when supported.
     #[serde(rename = "24h")]
     TwentyFourHours,
 }
 
-/// Constrains the verbosity of the model's response.
-#[derive(Clone, Serialize, Debug, Deserialize, PartialEq, Default)]
+/// Controls the verbosity of model-generated text.
+#[derive(Clone, Copy, Serialize, Debug, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Verbosity {
+    /// Prefer concise output.
     Low,
+    /// Use provider default verbosity.
     #[default]
     Medium,
+    /// Prefer more detailed output.
     High,
 }
 
-/// Output types that you would like the model to generate for this request.
-#[derive(Clone, Serialize, Debug, Deserialize, PartialEq)]
+/// Output modality requested from a multimodal model.
+#[derive(Clone, Copy, Serialize, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub enum ResponseModalities {
+pub enum OutputModality {
+    /// Text output.
     Text,
+    /// Audio output.
     Audio,
 }
 
-/// The amount of context window space to use for the search.
-#[derive(Clone, Serialize, Debug, Deserialize, PartialEq, Default)]
+/// Amount of model context available to hosted web search.
+#[derive(Clone, Copy, Serialize, Debug, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum WebSearchContextSize {
+    /// Small search context.
     Low,
+    /// Provider default search context.
     #[default]
     Medium,
+    /// Larger search context.
     High,
 }
 
-#[derive(Clone, Serialize, Debug, Deserialize, PartialEq)]
+/// User-location approximation mode for hosted web search.
+#[derive(Clone, Copy, Serialize, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum WebSearchUserLocationType {
+    /// Approximate user location.
     Approximate,
 }
 
-/// Approximate location parameters for the search.
-#[derive(Clone, Serialize, Debug, Default, Deserialize, PartialEq)]
+/// Approximate location parameters for hosted web search.
+#[derive(Clone, Serialize, Debug, Default, Deserialize, PartialEq, Eq)]
 pub struct WebSearchLocation {
+    /// ISO country code when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub country: Option<String>,
+    /// Region or state when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
+    /// City when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub city: Option<String>,
+    /// IANA timezone when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub timezone: Option<String>,
 }
 
-#[derive(Clone, Serialize, Debug, Deserialize, PartialEq)]
+/// User location hint for hosted web search.
+#[derive(Clone, Serialize, Debug, Deserialize, PartialEq, Eq)]
 pub struct WebSearchUserLocation {
+    /// Location hint type.
     pub r#type: WebSearchUserLocationType,
+    /// Approximate location details.
     pub approximate: WebSearchLocation,
 }
 
-/// Options for the web search tool.
-#[derive(Clone, Serialize, Debug, Default, Deserialize, PartialEq)]
+/// Hosted web-search options.
+#[derive(Clone, Serialize, Debug, Default, Deserialize, PartialEq, Eq)]
 pub struct WebSearchOptions {
+    /// Search-context budget.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub search_context_size: Option<WebSearchContextSize>,
+    /// Optional user-location hint.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub user_location: Option<WebSearchUserLocation>,
 }
 
-/// The content that should be matched when generating a model response.
+/// Static content supplied as a prediction hint.
 #[derive(Clone, Serialize, Debug, Deserialize, PartialEq)]
 #[serde(untagged)]
-pub enum PredictionContentContent {
+pub enum PredictionContentValue {
+    /// Plain predicted text.
     Text(String),
-    Array(Vec<ChatCompletionRequestMessageContentPartText>),
+    /// Structured predicted text parts.
+    Parts(Vec<TextPart>),
 }
 
-/// Static predicted output content.
+/// Prediction hint used by providers that support static predicted output.
 #[derive(Clone, Serialize, Debug, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "lowercase", content = "content")]
 pub enum PredictionContent {
-    Content(PredictionContentContent),
+    /// Static content prediction.
+    Content(PredictionContentValue),
 }
 
-#[derive(Clone, Serialize, Debug, Deserialize, PartialEq)]
+/// Voice requested for audio output.
+#[derive(Clone, Serialize, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub enum ChatCompletionAudioVoice {
+pub enum AudioVoice {
+    /// Alloy voice.
     Alloy,
+    /// Ash voice.
     Ash,
+    /// Ballad voice.
     Ballad,
+    /// Coral voice.
     Coral,
+    /// Echo voice.
     Echo,
+    /// Fable voice.
     Fable,
+    /// Nova voice.
     Nova,
+    /// Onyx voice.
     Onyx,
+    /// Sage voice.
     Sage,
+    /// Shimmer voice.
     Shimmer,
+    /// Provider-specific voice name.
     #[serde(untagged)]
     Other(String),
 }
 
-#[derive(Clone, Serialize, Debug, Deserialize, PartialEq)]
+/// Audio output encoding format.
+#[derive(Clone, Copy, Serialize, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub enum ChatCompletionAudioFormat {
+pub enum AudioOutputFormat {
+    /// WAV audio.
     Wav,
+    /// AAC audio.
     Aac,
+    /// MP3 audio.
     Mp3,
+    /// FLAC audio.
     Flac,
+    /// Opus audio.
     Opus,
+    /// 16-bit PCM audio.
     Pcm16,
 }
 
-#[derive(Clone, Serialize, Debug, Deserialize, PartialEq)]
-pub struct ChatCompletionAudio {
-    pub voice: ChatCompletionAudioVoice,
-    pub format: ChatCompletionAudioFormat,
+/// Audio output configuration.
+#[derive(Clone, Serialize, Debug, Deserialize, PartialEq, Eq)]
+pub struct AudioOutput {
+    /// Voice requested from the provider.
+    pub voice: AudioVoice,
+    /// Encoding format for generated audio.
+    pub format: AudioOutputFormat,
 }
 
-/// Options for streaming response. Only set this when you set `stream: true`.
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
-pub struct ChatCompletionStreamOptions {
+/// Options for streamed chat responses.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+pub struct StreamOptions {
+    /// Whether to include usage in the final stream chunk when supported.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub include_usage: Option<bool>,
+    /// Whether to include provider obfuscation markers when supported.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub include_obfuscation: Option<bool>,
 }

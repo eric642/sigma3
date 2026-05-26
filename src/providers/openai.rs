@@ -9,16 +9,17 @@ use futures_core::Stream;
 use http::header::{AUTHORIZATION, CONTENT_TYPE};
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use schemars::JsonSchema;
-use serde::ser::{SerializeMap, Serializer};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value, json};
 
 use crate::config::{ChatParameterMap, SecretString};
 use crate::provider_http::{
     ProviderByteStream, ProviderEndpoint, ProviderRequest, ProviderResponse, SignedProviderRequest,
 };
 use crate::types::chat::{
-    ChatCompletionRequestMessage, CreateChatCompletionResponse, CreateChatCompletionStreamResponse,
+    AssistantContent, AssistantContentPart, ChatMessage, ChatResponse, ChatStreamChunk,
+    DeveloperMessage, FileInput, SystemMessage, TextContent, ToolCall, ToolContent, UserContent,
+    UserContentPart,
 };
 use crate::{
     ChatAdapterContext, ChatAdapterRequest, ChatCompletionAdapter, ChatStream, ModelName,
@@ -30,18 +31,15 @@ const OPENAI_KIND: ProviderKindStatic = ProviderKindStatic::new("openai");
 const OPENAI_COMPATIBLE_KIND: ProviderKindStatic = ProviderKindStatic::new("openai-compatible");
 const OPENAI_DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 
-const SUPPORTED_OPENAI_CHAT_PARAMS: &[&str] = &[
-    "audio",
+const SUPPORTED_CHAT_PARAMS: &[&str] = &[
+    "audio_output",
+    "count",
     "frequency_penalty",
-    "function_call",
-    "functions",
     "logit_bias",
     "logprobs",
     "max_completion_tokens",
     "max_tokens",
-    "metadata",
-    "modalities",
-    "n",
+    "output_modalities",
     "parallel_tool_calls",
     "prediction",
     "presence_penalty",
@@ -61,9 +59,8 @@ const SUPPORTED_OPENAI_CHAT_PARAMS: &[&str] = &[
     "tools",
     "top_logprobs",
     "top_p",
-    "user",
     "verbosity",
-    "web_search_options",
+    "web_search",
 ];
 
 struct OpenAiProvider {
@@ -165,60 +162,6 @@ struct OpenAiChatAdapter {
     flavor: OpenAiFlavor,
 }
 
-struct OpenAiChatBody<'a> {
-    params: &'a ChatParameterMap,
-    provider_model: &'a ModelName,
-    messages: &'a [ChatCompletionRequestMessage],
-    provider_options: Option<&'a ChatParameterMap>,
-}
-
-impl Serialize for OpenAiChatBody<'_> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut len = self
-            .params
-            .keys()
-            .filter(|key| {
-                !is_generated_body_key(key.as_str())
-                    && !contains_provider_option(self.provider_options, key.as_str())
-            })
-            .count();
-
-        if !contains_provider_option(self.provider_options, "model") {
-            len += 1;
-        }
-        if !contains_provider_option(self.provider_options, "messages") {
-            len += 1;
-        }
-        if let Some(provider_options) = self.provider_options {
-            len += provider_options.len();
-        }
-
-        let mut map = serializer.serialize_map(Some(len))?;
-        for (key, value) in self.params {
-            if !is_generated_body_key(key.as_str())
-                && !contains_provider_option(self.provider_options, key.as_str())
-            {
-                map.serialize_entry(key, value)?;
-            }
-        }
-        if !contains_provider_option(self.provider_options, "model") {
-            map.serialize_entry("model", self.provider_model)?;
-        }
-        if !contains_provider_option(self.provider_options, "messages") {
-            map.serialize_entry("messages", self.messages)?;
-        }
-        if let Some(provider_options) = self.provider_options {
-            for (key, value) in provider_options {
-                map.serialize_entry(key, value)?;
-            }
-        }
-        map.end()
-    }
-}
-
 fn is_generated_body_key(key: &str) -> bool {
     key == "model" || key == "messages"
 }
@@ -227,12 +170,321 @@ fn contains_provider_option(provider_options: Option<&ChatParameterMap>, key: &s
     provider_options.is_some_and(|provider_options| provider_options.contains_key(key))
 }
 
-impl ChatCompletionAdapter for OpenAiChatAdapter {
-    fn supported_openai_params(&self) -> Vec<&'static str> {
-        SUPPORTED_OPENAI_CHAT_PARAMS.to_vec()
+fn rename_param(params: &mut ChatParameterMap, from: &str, to: &str) {
+    if let Some(value) = params.remove(from) {
+        params.insert(to.to_string(), value);
+    }
+}
+
+fn openai_chat_body(
+    provider: &ProviderId,
+    provider_model: &ModelName,
+    messages: &[ChatMessage],
+    params: &ChatParameterMap,
+    provider_options: Option<&ChatParameterMap>,
+) -> SigmaResult<Value> {
+    let mut body = Map::new();
+
+    for (key, value) in params {
+        if !is_generated_body_key(key.as_str())
+            && !contains_provider_option(provider_options, key.as_str())
+        {
+            body.insert(key.clone(), value.clone());
+        }
+    }
+    if !contains_provider_option(provider_options, "model") {
+        body.insert(
+            "model".to_string(),
+            Value::String(provider_model.to_string()),
+        );
+    }
+    if !contains_provider_option(provider_options, "messages") {
+        body.insert("messages".to_string(), openai_messages(provider, messages)?);
+    }
+    if let Some(provider_options) = provider_options {
+        for (key, value) in provider_options {
+            body.insert(key.clone(), value.clone());
+        }
     }
 
-    fn map_openai_params(&self, params: ChatParameterMap) -> SigmaResult<ChatParameterMap> {
+    Ok(Value::Object(body))
+}
+
+fn openai_messages(provider: &ProviderId, messages: &[ChatMessage]) -> SigmaResult<Value> {
+    messages
+        .iter()
+        .map(|message| openai_message(provider, message))
+        .collect::<SigmaResult<Vec<_>>>()
+        .map(Value::Array)
+}
+
+fn openai_message(provider: &ProviderId, message: &ChatMessage) -> SigmaResult<Value> {
+    let mut object = Map::new();
+    match message {
+        ChatMessage::Developer(message) => {
+            insert_text_message(&mut object, "developer", message, provider)?;
+        }
+        ChatMessage::System(message) => {
+            insert_text_message(&mut object, "system", message, provider)?;
+        }
+        ChatMessage::User(message) => {
+            object.insert("role".to_string(), Value::String("user".to_string()));
+            object.insert(
+                "content".to_string(),
+                openai_user_content(provider, &message.content)?,
+            );
+            insert_optional_string(&mut object, "name", message.name.as_deref());
+        }
+        ChatMessage::Assistant(message) => {
+            object.insert("role".to_string(), Value::String("assistant".to_string()));
+            if let Some(content) = &message.content {
+                object.insert(
+                    "content".to_string(),
+                    openai_assistant_content(provider, content)?,
+                );
+            }
+            insert_optional_string(&mut object, "refusal", message.refusal.as_deref());
+            insert_optional_string(&mut object, "name", message.name.as_deref());
+            if let Some(audio) = &message.audio {
+                object.insert("audio".to_string(), serialized_value(provider, audio)?);
+            }
+            if let Some(tool_calls) = &message.tool_calls {
+                object.insert(
+                    "tool_calls".to_string(),
+                    Value::Array(tool_calls.iter().map(openai_tool_call).collect::<Vec<_>>()),
+                );
+            }
+        }
+        ChatMessage::Tool(message) => {
+            object.insert("role".to_string(), Value::String("tool".to_string()));
+            object.insert(
+                "content".to_string(),
+                openai_tool_content(provider, &message.content)?,
+            );
+            object.insert(
+                "tool_call_id".to_string(),
+                Value::String(message.tool_call_id.clone()),
+            );
+        }
+    }
+
+    Ok(Value::Object(object))
+}
+
+fn insert_text_message<T>(
+    object: &mut Map<String, Value>,
+    role: &str,
+    message: &T,
+    provider: &ProviderId,
+) -> SigmaResult<()>
+where
+    T: TextMessageFields,
+{
+    object.insert("role".to_string(), Value::String(role.to_string()));
+    object.insert(
+        "content".to_string(),
+        openai_text_content(provider, message.content())?,
+    );
+    insert_optional_string(object, "name", message.name());
+    Ok(())
+}
+
+trait TextMessageFields {
+    fn content(&self) -> &TextContent;
+    fn name(&self) -> Option<&str>;
+}
+
+impl TextMessageFields for DeveloperMessage {
+    fn content(&self) -> &TextContent {
+        &self.content
+    }
+
+    fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+}
+
+impl TextMessageFields for SystemMessage {
+    fn content(&self) -> &TextContent {
+        &self.content
+    }
+
+    fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+}
+
+fn openai_text_content(provider: &ProviderId, content: &TextContent) -> SigmaResult<Value> {
+    match content {
+        TextContent::Text(text) => Ok(Value::String(text.clone())),
+        TextContent::Parts(parts) => parts
+            .iter()
+            .map(|part| openai_text_part(provider, part))
+            .collect::<SigmaResult<Vec<_>>>()
+            .map(Value::Array),
+    }
+}
+
+fn openai_user_content(provider: &ProviderId, content: &UserContent) -> SigmaResult<Value> {
+    match content {
+        UserContent::Text(text) => Ok(Value::String(text.clone())),
+        UserContent::Parts(parts) => parts
+            .iter()
+            .map(|part| openai_user_content_part(provider, part))
+            .collect::<SigmaResult<Vec<_>>>()
+            .map(Value::Array),
+    }
+}
+
+fn openai_user_content_part(provider: &ProviderId, part: &UserContentPart) -> SigmaResult<Value> {
+    match part {
+        UserContentPart::Text(part) => openai_text_part(provider, part),
+        UserContentPart::Image(part) => {
+            let mut object = Map::new();
+            object.insert("type".to_string(), Value::String("image_url".to_string()));
+            object.insert(
+                "image_url".to_string(),
+                serialized_value(provider, &part.image)?,
+            );
+            insert_cache_control(&mut object, provider, part.cache_control.as_ref())?;
+            Ok(Value::Object(object))
+        }
+        UserContentPart::Audio(part) => Ok(json!({
+            "type": "input_audio",
+            "input_audio": part.input_audio,
+        })),
+        UserContentPart::File(part) => {
+            let mut object = Map::new();
+            object.insert("type".to_string(), Value::String("file".to_string()));
+            object.insert("file".to_string(), openai_file_input(provider, &part.file)?);
+            insert_cache_control(&mut object, provider, part.cache_control.as_ref())?;
+            Ok(Value::Object(object))
+        }
+    }
+}
+
+fn openai_assistant_content(
+    provider: &ProviderId,
+    content: &AssistantContent,
+) -> SigmaResult<Value> {
+    match content {
+        AssistantContent::Text(text) => Ok(Value::String(text.clone())),
+        AssistantContent::Parts(parts) => parts
+            .iter()
+            .map(|part| openai_assistant_content_part(provider, part))
+            .collect::<SigmaResult<Vec<_>>>()
+            .map(Value::Array),
+    }
+}
+
+fn openai_assistant_content_part(
+    provider: &ProviderId,
+    part: &AssistantContentPart,
+) -> SigmaResult<Value> {
+    let mut object = Map::new();
+    match part {
+        AssistantContentPart::Text(part) => return openai_text_part(provider, part),
+        AssistantContentPart::Refusal(part) => {
+            object.insert("type".to_string(), Value::String("refusal".to_string()));
+            object.insert("refusal".to_string(), Value::String(part.refusal.clone()));
+        }
+    }
+    Ok(Value::Object(object))
+}
+
+fn openai_tool_content(provider: &ProviderId, content: &ToolContent) -> SigmaResult<Value> {
+    match content {
+        ToolContent::Text(text) => Ok(Value::String(text.clone())),
+        ToolContent::Parts(parts) => parts
+            .iter()
+            .map(|part| openai_text_part(provider, part))
+            .collect::<SigmaResult<Vec<_>>>()
+            .map(Value::Array),
+    }
+}
+
+fn openai_text_part(
+    provider: &ProviderId,
+    part: &crate::types::chat::TextPart,
+) -> SigmaResult<Value> {
+    let mut object = Map::new();
+    object.insert("type".to_string(), Value::String("text".to_string()));
+    object.insert("text".to_string(), Value::String(part.text.clone()));
+    insert_cache_control(&mut object, provider, part.cache_control.as_ref())?;
+    Ok(Value::Object(object))
+}
+
+fn openai_file_input(provider: &ProviderId, file: &FileInput) -> SigmaResult<Value> {
+    let mut object = Map::new();
+    insert_optional_string(&mut object, "file_data", file.data.as_deref());
+    insert_optional_string(&mut object, "file_id", file.id.as_deref());
+    insert_optional_string(&mut object, "filename", file.filename.as_deref());
+    insert_optional_string(&mut object, "format", file.media_type.as_deref());
+    if let Some(detail) = &file.detail {
+        object.insert("detail".to_string(), serialized_value(provider, detail)?);
+    }
+    if let Some(video_metadata) = &file.video_metadata {
+        object.insert(
+            "video_metadata".to_string(),
+            serialized_value(provider, video_metadata)?,
+        );
+    }
+    Ok(Value::Object(object))
+}
+
+fn openai_tool_call(tool_call: &ToolCall) -> Value {
+    match tool_call {
+        ToolCall::Function(call) => json!({
+            "type": "function",
+            "id": call.id,
+            "function": call.function,
+        }),
+        ToolCall::Custom(call) => json!({
+            "type": "custom",
+            "id": call.id,
+            "custom_tool": call.custom_tool,
+        }),
+    }
+}
+
+fn insert_optional_string(object: &mut Map<String, Value>, key: &str, value: Option<&str>) {
+    if let Some(value) = value {
+        object.insert(key.to_string(), Value::String(value.to_string()));
+    }
+}
+
+fn insert_cache_control(
+    object: &mut Map<String, Value>,
+    provider: &ProviderId,
+    cache_control: Option<&crate::types::chat::CacheControl>,
+) -> SigmaResult<()> {
+    if let Some(cache_control) = cache_control {
+        object.insert(
+            "cache_control".to_string(),
+            serialized_value(provider, cache_control)?,
+        );
+    }
+    Ok(())
+}
+
+fn serialized_value<T: Serialize>(provider: &ProviderId, value: &T) -> SigmaResult<Value> {
+    serde_json::to_value(value).map_err(|err| SigmaError::ProviderTransform {
+        provider: provider.clone(),
+        message: err.to_string(),
+    })
+}
+
+impl ChatCompletionAdapter for OpenAiChatAdapter {
+    fn supported_chat_params(&self) -> Vec<&'static str> {
+        SUPPORTED_CHAT_PARAMS.to_vec()
+    }
+
+    fn map_chat_params(&self, mut params: ChatParameterMap) -> SigmaResult<ChatParameterMap> {
+        rename_param(&mut params, "audio_output", "audio");
+        rename_param(&mut params, "count", "n");
+        rename_param(&mut params, "output_modalities", "modalities");
+        rename_param(&mut params, "web_search", "web_search_options");
+
         Ok(params)
     }
 
@@ -252,16 +504,13 @@ impl ChatCompletionAdapter for OpenAiChatAdapter {
         request: ChatAdapterRequest<'_>,
         endpoint: ProviderEndpoint,
     ) -> SigmaResult<ProviderRequest> {
-        let body = serde_json::to_value(&OpenAiChatBody {
-            params: &request.params,
-            provider_model: request.context.provider_model,
-            messages: request.messages,
-            provider_options: request.provider_options,
-        })
-        .map_err(|err| SigmaError::ProviderTransform {
-            provider: self.provider.clone(),
-            message: err.to_string(),
-        })?;
+        let body = openai_chat_body(
+            &self.provider,
+            request.context.provider_model,
+            request.messages,
+            &request.params,
+            request.provider_options,
+        )?;
 
         let mut headers = self.headers.clone();
         if !headers.contains_key(CONTENT_TYPE) {
@@ -297,11 +546,12 @@ impl ChatCompletionAdapter for OpenAiChatAdapter {
         &self,
         _context: &ChatAdapterContext<'_>,
         response: ProviderResponse,
-    ) -> SigmaResult<CreateChatCompletionResponse> {
+    ) -> SigmaResult<ChatResponse> {
         let mut body = parse_response_json(&self.provider, response.body.as_ref())?;
         if self.flavor.sanitizes_usage() {
             sanitize_null_usage_tokens(&mut body);
         }
+        map_response_reasoning_content(&mut body);
 
         serde_json::from_value(body).map_err(|err| SigmaError::ProviderResponse {
             provider: self.provider.clone(),
@@ -338,7 +588,7 @@ struct OpenAiSseStream {
     provider: ProviderId,
     stream: ProviderByteStream,
     buffer: String,
-    pending: VecDeque<SigmaResult<CreateChatCompletionStreamResponse>>,
+    pending: VecDeque<SigmaResult<ChatStreamChunk>>,
     done: bool,
     flavor: OpenAiFlavor,
 }
@@ -436,6 +686,7 @@ impl OpenAiSseStream {
         if self.flavor.sanitizes_usage() {
             sanitize_null_usage_tokens(&mut value);
         }
+        map_stream_reasoning_content(&mut value);
 
         let chunk = serde_json::from_value(value).map_err(|err| SigmaError::ProviderResponse {
             provider: self.provider.clone(),
@@ -446,7 +697,7 @@ impl OpenAiSseStream {
 }
 
 impl Stream for OpenAiSseStream {
-    type Item = SigmaResult<CreateChatCompletionStreamResponse>;
+    type Item = SigmaResult<ChatStreamChunk>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if let Some(item) = self.pending.pop_front() {
@@ -566,6 +817,50 @@ fn sanitize_null_usage_tokens(value: &mut Value) {
     for (key, value) in usage {
         if key.ends_with("_tokens") && value.is_null() {
             *value = Value::from(0);
+        }
+    }
+}
+
+fn map_response_reasoning_content(value: &mut Value) {
+    let Some(choices) = value.get_mut("choices").and_then(Value::as_array_mut) else {
+        return;
+    };
+
+    for choice in choices {
+        if let Some(message) = choice.get_mut("message").and_then(Value::as_object_mut) {
+            move_reasoning_content(message);
+        }
+    }
+}
+
+fn map_stream_reasoning_content(value: &mut Value) {
+    let Some(choices) = value.get_mut("choices").and_then(Value::as_array_mut) else {
+        return;
+    };
+
+    for choice in choices {
+        if let Some(delta) = choice.get_mut("delta").and_then(Value::as_object_mut) {
+            move_reasoning_content(delta);
+        }
+    }
+}
+
+fn move_reasoning_content(object: &mut Map<String, Value>) {
+    let Some(reasoning_content) = object.remove("reasoning_content") else {
+        return;
+    };
+    let Some(reasoning_text) = reasoning_content.as_str().filter(|value| !value.is_empty()) else {
+        return;
+    };
+    let reasoning_block = json!({
+        "type": "text",
+        "text": reasoning_text,
+    });
+
+    match object.get_mut("reasoning").and_then(Value::as_array_mut) {
+        Some(reasoning) => reasoning.push(reasoning_block),
+        None => {
+            object.insert("reasoning".to_string(), Value::Array(vec![reasoning_block]));
         }
     }
 }

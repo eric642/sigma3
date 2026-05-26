@@ -4,16 +4,10 @@ use futures_util::StreamExt;
 use http::StatusCode;
 use serde_json::{Value, json};
 use sigma::types::chat::{
-    CacheControl, ChatCompletionMessageToolCalls, ChatCompletionNamedToolChoice,
-    ChatCompletionRequestMessage, ChatCompletionRequestMessageContentPartAudio,
-    ChatCompletionRequestMessageContentPartFile, ChatCompletionRequestMessageContentPartImage,
-    ChatCompletionRequestMessageContentPartText, ChatCompletionRequestSystemMessage,
-    ChatCompletionRequestSystemMessageContent, ChatCompletionRequestUserMessage,
-    ChatCompletionRequestUserMessageContent, ChatCompletionRequestUserMessageContentPart,
-    ChatCompletionTool, ChatCompletionToolChoiceOption, ChatCompletionTools,
-    CreateChatCompletionRequest, CreateChatCompletionRequestArgs,
-    CreateChatCompletionRequestParamsArgs, FileObject, FinishReason, InputAudio, InputAudioFormat,
-    StopConfiguration,
+    AudioPart, CacheControl, ChatRequest, ChatRequestParams, FileInput, FilePart, FinishReason,
+    FunctionTool, ImagePart, InputAudio, InputAudioFormat, NamedFunctionToolChoice,
+    StopConfiguration, SystemMessage, TextContent, TextPart, ToolCall, ToolChoice, ToolDefinition,
+    UserContent, UserContentPart, UserMessage,
 };
 use sigma::types::shared::{
     FunctionName, FunctionObject, ImageDetail, ImageUrl, ReasoningEffort, ResponseFormat,
@@ -110,21 +104,16 @@ async fn last_body(server: &MockServer) -> Value {
     last_request(server).await.body_json().unwrap()
 }
 
-fn basic_request() -> CreateChatCompletionRequest {
-    CreateChatCompletionRequestArgs::default()
-        .messages(vec![ChatCompletionRequestMessage::User(
-            ChatCompletionRequestUserMessage::from("hello"),
-        )])
-        .model(ModelRef::model("gemini-public"))
-        .params(
-            CreateChatCompletionRequestParamsArgs::default()
-                .max_completion_tokens(32u32)
-                .temperature(0.2f32)
-                .build()
-                .unwrap(),
-        )
-        .build()
-        .unwrap()
+fn basic_request() -> ChatRequest {
+    ChatRequest::new(
+        ModelRef::model("gemini-public"),
+        vec![UserMessage::from("hello").into()],
+    )
+    .with_params(ChatRequestParams {
+        max_completion_tokens: Some(32),
+        temperature: Some(0.2f32),
+        ..Default::default()
+    })
 }
 
 #[test]
@@ -158,57 +147,50 @@ async fn gemini_create_posts_generate_content_body_and_headers() {
     let server = MockServer::start().await;
     mount_gemini_json(&server, gemini_response("ok")).await;
     let client = Client::build(gemini_config(server.uri())).unwrap();
-    let request = CreateChatCompletionRequestArgs::default()
-        .messages(vec![
-            ChatCompletionRequestMessage::System(ChatCompletionRequestSystemMessage {
-                content: ChatCompletionRequestSystemMessageContent::Text("Be concise.".to_string()),
+    let request = ChatRequest::new(
+        ModelRef::model("gemini-public"),
+        vec![
+            SystemMessage {
+                content: TextContent::Text("Be concise.".to_string()),
                 name: None,
-            }),
-            ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
-                content: ChatCompletionRequestUserMessageContent::Array(vec![
-                    ChatCompletionRequestUserMessageContentPart::Text(
-                        ChatCompletionRequestMessageContentPartText {
-                            text: "Describe this.".to_string(),
-                            cache_control: Some(CacheControl::ephemeral()),
+            }
+            .into(),
+            UserMessage {
+                content: UserContent::Parts(vec![
+                    UserContentPart::Text(TextPart {
+                        text: "Describe this.".to_string(),
+                        cache_control: Some(CacheControl::ephemeral()),
+                    }),
+                    UserContentPart::Image(ImagePart {
+                        image: ImageUrl {
+                            url: "data:image/png;base64,AAAA".to_string(),
+                            detail: Some(ImageDetail::High),
                         },
-                    ),
-                    ChatCompletionRequestUserMessageContentPart::ImageUrl(
-                        ChatCompletionRequestMessageContentPartImage {
-                            image_url: ImageUrl {
-                                url: "data:image/png;base64,AAAA".to_string(),
-                                detail: Some(ImageDetail::High),
-                            },
-                            cache_control: Some(CacheControl::ephemeral()),
+                        cache_control: Some(CacheControl::ephemeral()),
+                    }),
+                    UserContentPart::Audio(AudioPart {
+                        input_audio: InputAudio {
+                            data: "UklGRg==".to_string(),
+                            format: InputAudioFormat::Wav,
                         },
-                    ),
-                    ChatCompletionRequestUserMessageContentPart::InputAudio(
-                        ChatCompletionRequestMessageContentPartAudio {
-                            input_audio: InputAudio {
-                                data: "UklGRg==".to_string(),
-                                format: InputAudioFormat::Wav,
-                            },
+                    }),
+                    UserContentPart::File(FilePart {
+                        file: FileInput {
+                            data: Some("data:application/pdf;base64,JVBERi0=".to_string()),
+                            id: None,
+                            filename: Some("paper.pdf".to_string()),
+                            media_type: Some("application/pdf".to_string()),
+                            detail: None,
+                            video_metadata: None,
                         },
-                    ),
-                    ChatCompletionRequestUserMessageContentPart::File(
-                        ChatCompletionRequestMessageContentPartFile {
-                            file: FileObject {
-                                file_data: Some("data:application/pdf;base64,JVBERi0=".to_string()),
-                                file_id: None,
-                                filename: Some("paper.pdf".to_string()),
-                                format: Some("application/pdf".to_string()),
-                                detail: None,
-                                video_metadata: None,
-                            },
-                            cache_control: Some(CacheControl::ephemeral()),
-                        },
-                    ),
+                        cache_control: Some(CacheControl::ephemeral()),
+                    }),
                 ]),
                 name: None,
-            }),
-        ])
-        .model(ModelRef::model("gemini-public"))
-        .build()
-        .unwrap();
+            }
+            .into(),
+        ],
+    );
 
     let response = client.chat().create(&request).await.unwrap();
 
@@ -262,7 +244,7 @@ async fn gemini_create_maps_openai_params_tools_and_response_format() {
     let mut request = basic_request();
     request.params.top_p = Some(0.9);
     request.params.stop = Some(StopConfiguration::String("END".to_string()));
-    request.params.n = Some(2);
+    request.params.count = Some(2);
     request.params.reasoning_effort = Some(ReasoningEffort::Low);
     request.params.response_format = Some(ResponseFormat::JsonSchema {
         json_schema: ResponseFormatJsonSchema {
@@ -277,7 +259,7 @@ async fn gemini_create_maps_openai_params_tools_and_response_format() {
             strict: Some(true),
         },
     });
-    request.params.tools = Some(vec![ChatCompletionTools::Function(ChatCompletionTool {
+    request.params.tools = Some(vec![ToolDefinition::Function(FunctionTool {
         function: FunctionObject {
             name: "get_weather".to_string(),
             description: Some("Get weather".to_string()),
@@ -289,13 +271,11 @@ async fn gemini_create_maps_openai_params_tools_and_response_format() {
             strict: Some(true),
         },
     })]);
-    request.params.tool_choice = Some(ChatCompletionToolChoiceOption::Function(
-        ChatCompletionNamedToolChoice {
-            function: FunctionName {
-                name: "get_weather".to_string(),
-            },
+    request.params.tool_choice = Some(ToolChoice::Function(NamedFunctionToolChoice {
+        function: FunctionName {
+            name: "get_weather".to_string(),
         },
-    ));
+    }));
 
     client.chat().create(&request).await.unwrap();
 
@@ -368,14 +348,14 @@ async fn gemini_create_transforms_function_calls_and_usage() {
         Some(FinishReason::ToolCalls)
     );
     let tool_call = &response.choices[0].message.tool_calls.as_ref().unwrap()[0];
-    let ChatCompletionMessageToolCalls::Function(tool_call) = tool_call else {
+    let ToolCall::Function(tool_call) = tool_call else {
         panic!("expected function tool call")
     };
     assert_eq!(tool_call.function.name, "get_weather");
     assert_eq!(tool_call.function.arguments, r#"{"location":"Paris"}"#);
     assert_eq!(
-        tool_call.provider_specific_fields.as_ref().unwrap()["thought_signature"],
-        "sig-123"
+        tool_call.reasoning.as_ref().unwrap()[0].signature_value(),
+        Some("sig-123")
     );
     let usage = response.usage.unwrap();
     assert_eq!(usage.total_tokens, 15);

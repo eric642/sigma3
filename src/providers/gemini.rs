@@ -17,15 +17,10 @@ use crate::provider_http::{
     ProviderByteStream, ProviderEndpoint, ProviderRequest, ProviderResponse, SignedProviderRequest,
 };
 use crate::types::chat::{
-    ChatChoice, ChatChoiceStream, ChatCompletionMessageToolCall,
-    ChatCompletionMessageToolCallChunk, ChatCompletionMessageToolCalls,
-    ChatCompletionRequestAssistantMessageContent, ChatCompletionRequestDeveloperMessageContent,
-    ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageContent,
-    ChatCompletionRequestToolMessageContent, ChatCompletionRequestUserMessageContent,
-    ChatCompletionRequestUserMessageContentPart, ChatCompletionResponseMessage,
-    ChatCompletionResponseMessageAnnotation, ChatCompletionStreamResponseDelta, CompletionUsage,
-    CreateChatCompletionResponse, CreateChatCompletionStreamResponse, FinishReason, FunctionType,
-    Role, StopConfiguration, UrlCitation,
+    Annotation, AssistantContent, AssistantDelta, ChatChoice, ChatMessage, ChatResponse,
+    ChatResponseMessage, ChatStreamChoice, ChatStreamChunk, FinishReason, FunctionToolCall,
+    ReasoningBlock, Role, StopConfiguration, TextContent, ToolCall, ToolCallDelta, ToolCallKind,
+    ToolContent, UrlCitation, Usage, UserContent, UserContentPart, VideoMetadata,
 };
 use crate::types::shared::{
     CompletionTokensDetails, FunctionCall, ImageDetail, PromptTokensDetails, ReasoningEffort,
@@ -41,13 +36,13 @@ const GEMINI_DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com
 const GEMINI_API_KEY_HEADER: &str = "x-goog-api-key";
 
 const SUPPORTED_GEMINI_CHAT_PARAMS: &[&str] = &[
-    "audio",
+    "audio_output",
+    "count",
     "frequency_penalty",
     "logprobs",
     "max_completion_tokens",
     "max_tokens",
-    "modalities",
-    "n",
+    "output_modalities",
     "parallel_tool_calls",
     "presence_penalty",
     "reasoning_effort",
@@ -60,7 +55,7 @@ const SUPPORTED_GEMINI_CHAT_PARAMS: &[&str] = &[
     "tools",
     "top_logprobs",
     "top_p",
-    "web_search_options",
+    "web_search",
 ];
 
 struct GeminiProvider {
@@ -164,11 +159,11 @@ struct GeminiChatAdapter {
 }
 
 impl ChatCompletionAdapter for GeminiChatAdapter {
-    fn supported_openai_params(&self) -> Vec<&'static str> {
+    fn supported_chat_params(&self) -> Vec<&'static str> {
         SUPPORTED_GEMINI_CHAT_PARAMS.to_vec()
     }
 
-    fn map_openai_params(&self, params: ChatParameterMap) -> SigmaResult<ChatParameterMap> {
+    fn map_chat_params(&self, params: ChatParameterMap) -> SigmaResult<ChatParameterMap> {
         Ok(params)
     }
 
@@ -256,7 +251,7 @@ impl ChatCompletionAdapter for GeminiChatAdapter {
         &self,
         context: &ChatAdapterContext<'_>,
         response: ProviderResponse,
-    ) -> SigmaResult<CreateChatCompletionResponse> {
+    ) -> SigmaResult<ChatResponse> {
         let body = parse_response_json(&self.provider, response.body.as_ref())?;
         gemini_response_to_chat_response(context, response.headers, body)
     }
@@ -289,7 +284,7 @@ impl ChatCompletionAdapter for GeminiChatAdapter {
 fn gemini_request_body(
     provider: &ProviderId,
     context: ChatAdapterContext<'_>,
-    messages: &[ChatCompletionRequestMessage],
+    messages: &[ChatMessage],
     params: &ChatParameterMap,
 ) -> SigmaResult<Map<String, Value>> {
     let translated = translate_gemini_messages(provider, context.provider_model, messages)?;
@@ -336,7 +331,7 @@ struct TranslatedGeminiMessages {
 fn translate_gemini_messages(
     provider: &ProviderId,
     model: &ModelName,
-    messages: &[ChatCompletionRequestMessage],
+    messages: &[ChatMessage],
 ) -> SigmaResult<TranslatedGeminiMessages> {
     let mut system_parts = Vec::new();
     let mut contents = Vec::new();
@@ -344,13 +339,13 @@ fn translate_gemini_messages(
 
     for message in messages {
         match message {
-            ChatCompletionRequestMessage::Developer(message) => {
+            ChatMessage::Developer(message) => {
                 system_parts.extend(developer_content_parts(&message.content));
             }
-            ChatCompletionRequestMessage::System(message) => {
+            ChatMessage::System(message) => {
                 system_parts.extend(system_content_parts(&message.content));
             }
-            ChatCompletionRequestMessage::User(message) => {
+            ChatMessage::User(message) => {
                 let parts = user_content_parts(provider, model, &message.content)?;
                 if !parts.is_empty() {
                     contents.push(json!({
@@ -359,7 +354,7 @@ fn translate_gemini_messages(
                     }));
                 }
             }
-            ChatCompletionRequestMessage::Assistant(message) => {
+            ChatMessage::Assistant(message) => {
                 let mut parts = Vec::new();
                 if let Some(content) = &message.content {
                     parts.extend(assistant_content_parts(content));
@@ -367,9 +362,7 @@ fn translate_gemini_messages(
                 if let Some(tool_calls) = &message.tool_calls {
                     for tool_call in tool_calls {
                         if let Some(part) = assistant_tool_call_part(tool_call)? {
-                            if let ChatCompletionMessageToolCalls::Function(function_call) =
-                                tool_call
-                            {
+                            if let ToolCall::Function(function_call) = tool_call {
                                 last_tool_names.insert(
                                     function_call.id.clone(),
                                     function_call.function.name.clone(),
@@ -386,7 +379,7 @@ fn translate_gemini_messages(
                     }));
                 }
             }
-            ChatCompletionRequestMessage::Tool(message) => {
+            ChatMessage::Tool(message) => {
                 let name = last_tool_names.get(&message.tool_call_id).ok_or_else(|| {
                     SigmaError::ProviderTransform {
                         provider: provider.clone(),
@@ -423,30 +416,22 @@ fn translate_gemini_messages(
     })
 }
 
-fn developer_content_parts(content: &ChatCompletionRequestDeveloperMessageContent) -> Vec<Value> {
+fn developer_content_parts(content: &TextContent) -> Vec<Value> {
     match content {
-        ChatCompletionRequestDeveloperMessageContent::Text(text) => vec![json!({ "text": text })],
-        ChatCompletionRequestDeveloperMessageContent::Array(parts) => parts
+        TextContent::Text(text) => vec![json!({ "text": text })],
+        TextContent::Parts(parts) => parts
             .iter()
-            .map(|part| match part {
-                crate::types::chat::ChatCompletionRequestDeveloperMessageContentPart::Text(
-                    text,
-                ) => json!({ "text": text.text }),
-            })
+            .map(|part| json!({ "text": part.text }))
             .collect(),
     }
 }
 
-fn system_content_parts(content: &ChatCompletionRequestSystemMessageContent) -> Vec<Value> {
+fn system_content_parts(content: &TextContent) -> Vec<Value> {
     match content {
-        ChatCompletionRequestSystemMessageContent::Text(text) => vec![json!({ "text": text })],
-        ChatCompletionRequestSystemMessageContent::Array(parts) => parts
+        TextContent::Text(text) => vec![json!({ "text": text })],
+        TextContent::Parts(parts) => parts
             .iter()
-            .map(|part| match part {
-                crate::types::chat::ChatCompletionRequestSystemMessageContentPart::Text(text) => {
-                    json!({ "text": text.text })
-                }
-            })
+            .map(|part| json!({ "text": part.text }))
             .collect(),
     }
 }
@@ -454,11 +439,11 @@ fn system_content_parts(content: &ChatCompletionRequestSystemMessageContent) -> 
 fn user_content_parts(
     provider: &ProviderId,
     model: &ModelName,
-    content: &ChatCompletionRequestUserMessageContent,
+    content: &UserContent,
 ) -> SigmaResult<Vec<Value>> {
     match content {
-        ChatCompletionRequestUserMessageContent::Text(text) => Ok(vec![json!({ "text": text })]),
-        ChatCompletionRequestUserMessageContent::Array(parts) => parts
+        UserContent::Text(text) => Ok(vec![json!({ "text": text })]),
+        UserContent::Parts(parts) => parts
             .iter()
             .map(|part| user_content_part(provider, model, part))
             .collect(),
@@ -468,19 +453,19 @@ fn user_content_parts(
 fn user_content_part(
     provider: &ProviderId,
     model: &ModelName,
-    part: &ChatCompletionRequestUserMessageContentPart,
+    part: &UserContentPart,
 ) -> SigmaResult<Value> {
     match part {
-        ChatCompletionRequestUserMessageContentPart::Text(text) => Ok(json!({ "text": text.text })),
-        ChatCompletionRequestUserMessageContentPart::ImageUrl(image) => gemini_media_part(
+        UserContentPart::Text(text) => Ok(json!({ "text": text.text })),
+        UserContentPart::Image(image) => gemini_media_part(
             provider,
             model,
-            &image.image_url.url,
+            &image.image.url,
             None,
-            image.image_url.detail.as_ref(),
+            image.image.detail.as_ref(),
             None,
         ),
-        ChatCompletionRequestUserMessageContentPart::InputAudio(audio) => {
+        UserContentPart::Audio(audio) => {
             let format = match audio.input_audio.format {
                 crate::types::chat::InputAudioFormat::Wav => "audio/wav",
                 crate::types::chat::InputAudioFormat::Mp3 => "audio/mp3",
@@ -492,21 +477,21 @@ fn user_content_part(
                 }
             }))
         }
-        ChatCompletionRequestUserMessageContentPart::File(file) => {
+        UserContentPart::File(file) => {
             let source = file
                 .file
-                .file_data
+                .data
                 .as_deref()
-                .or(file.file.file_id.as_deref())
+                .or(file.file.id.as_deref())
                 .ok_or_else(|| SigmaError::ProviderTransform {
                     provider: provider.clone(),
-                    message: "gemini file content requires file_data or file_id".to_string(),
+                    message: "gemini file content requires data or id".to_string(),
                 })?;
             gemini_media_part(
                 provider,
                 model,
                 source,
-                file.file.format.as_deref(),
+                file.file.media_type.as_deref(),
                 file.file.detail.as_ref(),
                 file.file.video_metadata.as_ref(),
             )
@@ -514,28 +499,24 @@ fn user_content_part(
     }
 }
 
-fn assistant_content_parts(content: &ChatCompletionRequestAssistantMessageContent) -> Vec<Value> {
+fn assistant_content_parts(content: &AssistantContent) -> Vec<Value> {
     match content {
-        ChatCompletionRequestAssistantMessageContent::Text(text) => vec![json!({ "text": text })],
-        ChatCompletionRequestAssistantMessageContent::Array(parts) => parts
+        AssistantContent::Text(text) => vec![json!({ "text": text })],
+        AssistantContent::Parts(parts) => parts
             .iter()
             .filter_map(|part| match part {
-                crate::types::chat::ChatCompletionRequestAssistantMessageContentPart::Text(
-                    text,
-                ) => Some(json!({ "text": text.text })),
-                crate::types::chat::ChatCompletionRequestAssistantMessageContentPart::Refusal(
-                    _,
-                ) => None,
+                crate::types::chat::AssistantContentPart::Text(text) => {
+                    Some(json!({ "text": text.text }))
+                }
+                crate::types::chat::AssistantContentPart::Refusal(_) => None,
             })
             .collect(),
     }
 }
 
-fn assistant_tool_call_part(
-    tool_call: &ChatCompletionMessageToolCalls,
-) -> SigmaResult<Option<Value>> {
+fn assistant_tool_call_part(tool_call: &ToolCall) -> SigmaResult<Option<Value>> {
     match tool_call {
-        ChatCompletionMessageToolCalls::Function(tool_call) => {
+        ToolCall::Function(tool_call) => {
             let args = parse_function_arguments(&tool_call.function.arguments);
             let mut part = json!({
                 "functionCall": {
@@ -544,10 +525,9 @@ fn assistant_tool_call_part(
                 }
             });
             if let Some(signature) = tool_call
-                .provider_specific_fields
+                .reasoning
                 .as_ref()
-                .and_then(|fields| fields.get("thought_signature"))
-                .and_then(Value::as_str)
+                .and_then(|blocks| blocks.iter().find_map(ReasoningBlock::signature_value))
                 && let Some(object) = part.as_object_mut()
             {
                 object.insert(
@@ -557,20 +537,16 @@ fn assistant_tool_call_part(
             }
             Ok(Some(part))
         }
-        ChatCompletionMessageToolCalls::Custom(_) => Ok(None),
+        ToolCall::Custom(_) => Ok(None),
     }
 }
 
-fn tool_response_part(name: &str, content: &ChatCompletionRequestToolMessageContent) -> Value {
+fn tool_response_part(name: &str, content: &ToolContent) -> Value {
     let text = match content {
-        ChatCompletionRequestToolMessageContent::Text(text) => text.clone(),
-        ChatCompletionRequestToolMessageContent::Array(parts) => parts
+        ToolContent::Text(text) => text.clone(),
+        ToolContent::Parts(parts) => parts
             .iter()
-            .map(|part| match part {
-                crate::types::chat::ChatCompletionRequestToolMessageContentPart::Text(text) => {
-                    text.text.as_str()
-                }
-            })
+            .map(|part| part.text.as_str())
             .collect::<String>(),
     };
     let response = if text.trim_start().starts_with('{') {
@@ -603,7 +579,7 @@ fn gemini_media_part(
     source: &str,
     format: Option<&str>,
     detail: Option<&ImageDetail>,
-    video_metadata: Option<&Value>,
+    video_metadata: Option<&VideoMetadata>,
 ) -> SigmaResult<Value> {
     let mut part = if let Some((mime_type, data)) = parse_data_uri(source) {
         json!({
@@ -680,7 +656,7 @@ fn map_gemini_params(
             "max_tokens" | "max_completion_tokens" => {
                 insert_clone(&mut generation_config, "maxOutputTokens", value);
             }
-            "n" => insert_clone(&mut generation_config, "candidateCount", value),
+            "count" => insert_clone(&mut generation_config, "candidateCount", value),
             "stop" => {
                 generation_config.insert("stopSequences".to_string(), stop_sequences(value));
             }
@@ -692,10 +668,10 @@ fn map_gemini_params(
             "presence_penalty" if !is_gemini_3_or_newer(model.as_str()) => {
                 insert_float(&mut generation_config, "presencePenalty", value);
             }
-            "modalities" => {
+            "output_modalities" => {
                 generation_config.insert("responseModalities".to_string(), modalities(value));
             }
-            "audio" => {
+            "audio_output" => {
                 generation_config
                     .insert("speechConfig".to_string(), speech_config(provider, value)?);
                 generation_config
@@ -719,7 +695,7 @@ fn map_gemini_params(
             "tool_choice" => {
                 tool_config = map_tool_choice(value);
             }
-            "web_search_options" => special_tools.push(json!({ "googleSearch": {} })),
+            "web_search" => special_tools.push(json!({ "googleSearch": {} })),
             "service_tier" => {
                 if let Some(value) = value.as_str() {
                     service_tier = Some(Value::String(gemini_service_tier(value).to_string()));
@@ -980,7 +956,7 @@ fn gemini_response_to_chat_response(
     context: &ChatAdapterContext<'_>,
     headers: HeaderMap,
     body: Value,
-) -> SigmaResult<CreateChatCompletionResponse> {
+) -> SigmaResult<ChatResponse> {
     let id = body
         .get("responseId")
         .and_then(Value::as_str)
@@ -990,7 +966,7 @@ fn gemini_response_to_chat_response(
     let service_tier = gemini_service_tier_from_headers(&headers);
     let choices = gemini_choices(&body, false)?;
 
-    Ok(CreateChatCompletionResponse {
+    Ok(ChatResponse {
         id,
         choices,
         created: 0,
@@ -1007,16 +983,15 @@ fn gemini_choices(body: &Value, stream_delta: bool) -> SigmaResult<Vec<ChatChoic
     {
         return Ok(vec![ChatChoice {
             index: 0,
-            message: ChatCompletionResponseMessage {
+            message: ChatResponseMessage {
                 content: None,
-                reasoning_content: None,
+                reasoning: None,
                 refusal: None,
                 tool_calls: None,
                 annotations: None,
                 role: Role::Assistant,
                 audio: None,
-                thinking_blocks: None,
-                provider_specific_fields: None,
+                provider_context: None,
             },
             finish_reason: Some(FinishReason::ContentFilter),
             logprobs: None,
@@ -1058,7 +1033,7 @@ fn gemini_candidate_choice(
                 }
             }
             if let Some(signature) = part.get("thoughtSignature").and_then(Value::as_str) {
-                thought_signatures.push(Value::String(signature.to_string()));
+                thought_signatures.push(signature.to_string());
             }
             if let Some(function_call) = part.get("functionCall").and_then(Value::as_object) {
                 let name = function_call
@@ -1070,17 +1045,15 @@ fn gemini_candidate_choice(
                     .get("args")
                     .map(|args| serde_json::to_string(args).unwrap_or_else(|_| "null".to_string()))
                     .unwrap_or_else(|| "null".to_string());
-                let provider_specific_fields = part
+                let reasoning = part
                     .get("thoughtSignature")
                     .and_then(Value::as_str)
-                    .map(|signature| json!({ "thought_signature": signature }));
-                tool_calls.push(ChatCompletionMessageToolCalls::Function(
-                    ChatCompletionMessageToolCall {
-                        id: format!("call_gemini_{idx}_{part_idx}"),
-                        function: FunctionCall { name, arguments },
-                        provider_specific_fields,
-                    },
-                ));
+                    .map(|signature| vec![ReasoningBlock::signature(signature)]);
+                tool_calls.push(ToolCall::Function(FunctionToolCall {
+                    id: format!("call_gemini_{idx}_{part_idx}"),
+                    function: FunctionCall { name, arguments },
+                    reasoning,
+                }));
             }
         }
     }
@@ -1096,27 +1069,30 @@ fn gemini_candidate_choice(
     let annotations = candidate
         .get("groundingMetadata")
         .and_then(|metadata| grounding_annotations(metadata, content.as_str()));
-    let provider_specific_fields = (!thought_signatures.is_empty()).then(|| {
-        json!({
-            "thought_signatures": thought_signatures
-        })
-    });
+    let mut reasoning = Vec::new();
+    if !reasoning_content.is_empty() {
+        reasoning.push(ReasoningBlock::text(reasoning_content, None::<String>));
+    }
+    reasoning.extend(
+        thought_signatures
+            .into_iter()
+            .map(ReasoningBlock::signature),
+    );
 
     Ok(ChatChoice {
         index: candidate
             .get("index")
             .and_then(Value::as_u64)
             .unwrap_or(idx as u64) as u32,
-        message: ChatCompletionResponseMessage {
+        message: ChatResponseMessage {
             content: (!content.is_empty()).then_some(content),
-            reasoning_content: (!reasoning_content.is_empty()).then_some(reasoning_content),
+            reasoning: (!reasoning.is_empty()).then_some(reasoning),
             refusal: None,
             tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
             annotations,
             role: Role::Assistant,
             audio: None,
-            thinking_blocks: None,
-            provider_specific_fields,
+            provider_context: None,
         },
         finish_reason,
         logprobs: None,
@@ -1128,7 +1104,7 @@ struct GeminiSseStream {
     model: ModelName,
     stream: ProviderByteStream,
     buffer: String,
-    pending: VecDeque<SigmaResult<CreateChatCompletionStreamResponse>>,
+    pending: VecDeque<SigmaResult<ChatStreamChunk>>,
     done: bool,
     seen_tool_calls: bool,
 }
@@ -1200,10 +1176,7 @@ impl GeminiSseStream {
         self.pending.push_back(chunk);
     }
 
-    fn stream_response_from_value(
-        &mut self,
-        value: Value,
-    ) -> SigmaResult<CreateChatCompletionStreamResponse> {
+    fn stream_response_from_value(&mut self, value: Value) -> SigmaResult<ChatStreamChunk> {
         let id = value
             .get("responseId")
             .and_then(Value::as_str)
@@ -1225,7 +1198,7 @@ impl GeminiSseStream {
             }
         }
 
-        Ok(CreateChatCompletionStreamResponse {
+        Ok(ChatStreamChunk {
             id,
             choices,
             created: 0,
@@ -1238,7 +1211,7 @@ impl GeminiSseStream {
 }
 
 impl Stream for GeminiSseStream {
-    type Item = SigmaResult<CreateChatCompletionStreamResponse>;
+    type Item = SigmaResult<ChatStreamChunk>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if let Some(item) = self.pending.pop_front() {
@@ -1272,7 +1245,7 @@ impl Stream for GeminiSseStream {
     }
 }
 
-fn stream_choice_from_candidate(candidate: &Value, idx: usize) -> SigmaResult<ChatChoiceStream> {
+fn stream_choice_from_candidate(candidate: &Value, idx: usize) -> SigmaResult<ChatStreamChoice> {
     let parts = candidate
         .get("content")
         .and_then(|content| content.get("parts"))
@@ -1280,7 +1253,7 @@ fn stream_choice_from_candidate(candidate: &Value, idx: usize) -> SigmaResult<Ch
     let mut content = String::new();
     let mut reasoning_content = String::new();
     let mut tool_calls = Vec::new();
-    let mut provider_specific_fields = None;
+    let mut reasoning = Vec::new();
 
     if let Some(parts) = parts {
         for (part_idx, part) in parts.iter().enumerate() {
@@ -1292,10 +1265,10 @@ fn stream_choice_from_candidate(candidate: &Value, idx: usize) -> SigmaResult<Ch
                 }
             }
             if let Some(signature) = part.get("thoughtSignature").and_then(Value::as_str) {
-                provider_specific_fields = Some(json!({ "thought_signature": signature }));
+                reasoning.push(ReasoningBlock::signature(signature));
             }
             if let Some(function_call) = part.get("functionCall").and_then(Value::as_object) {
-                let function = crate::types::chat::FunctionCallStream {
+                let function = crate::types::chat::FunctionCallDelta {
                     name: function_call
                         .get("name")
                         .and_then(Value::as_str)
@@ -1304,30 +1277,31 @@ fn stream_choice_from_candidate(candidate: &Value, idx: usize) -> SigmaResult<Ch
                         serde_json::to_string(args).unwrap_or_else(|_| "null".to_string())
                     }),
                 };
-                tool_calls.push(ChatCompletionMessageToolCallChunk {
+                tool_calls.push(ToolCallDelta {
                     index: part_idx as u32,
                     id: Some(format!("call_gemini_{idx}_{part_idx}")),
-                    r#type: Some(FunctionType::Function),
+                    r#type: Some(ToolCallKind::Function),
                     function: Some(function),
-                    provider_specific_fields: provider_specific_fields.clone(),
+                    reasoning: (!reasoning.is_empty()).then_some(reasoning.clone()),
                 });
             }
         }
     }
+    if !reasoning_content.is_empty() {
+        reasoning.insert(0, ReasoningBlock::text(reasoning_content, None::<String>));
+    }
 
-    Ok(ChatChoiceStream {
+    Ok(ChatStreamChoice {
         index: candidate
             .get("index")
             .and_then(Value::as_u64)
             .unwrap_or(idx as u64) as u32,
-        delta: ChatCompletionStreamResponseDelta {
+        delta: AssistantDelta {
             content: (!content.is_empty()).then_some(content),
-            reasoning_content: (!reasoning_content.is_empty()).then_some(reasoning_content),
+            reasoning: (!reasoning.is_empty()).then_some(reasoning),
             tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
             role: parts.map(|_| Role::Assistant),
             refusal: None,
-            thinking_blocks: None,
-            provider_specific_fields,
         },
         finish_reason: candidate
             .get("finishReason")
@@ -1337,7 +1311,7 @@ fn stream_choice_from_candidate(candidate: &Value, idx: usize) -> SigmaResult<Ch
     })
 }
 
-fn gemini_usage(value: &Value) -> CompletionUsage {
+fn gemini_usage(value: &Value) -> Usage {
     let prompt_tokens = u32_field(value, "promptTokenCount");
     let candidates_tokens = u32_field(value, "candidatesTokenCount");
     let reasoning_tokens = value.get("thoughtsTokenCount").and_then(u32_value);
@@ -1347,13 +1321,13 @@ fn gemini_usage(value: &Value) -> CompletionUsage {
     let prompt_details = modality_details(value.get("promptTokensDetails"));
     let completion_details = modality_details(value.get("candidatesTokensDetails"));
 
-    CompletionUsage {
+    Usage {
         prompt_tokens,
         completion_tokens,
         total_tokens,
         cache_creation_input_tokens: None,
         cache_read_input_tokens: cached_tokens,
-        server_tool_use: None,
+        hosted_tool_use: None,
         inference_geo: None,
         speed: None,
         prompt_tokens_details: Some(PromptTokensDetails {
@@ -1414,10 +1388,7 @@ fn add_count(target: &mut Option<u32>, count: u32) {
     *target = Some(target.unwrap_or(0) + count);
 }
 
-fn grounding_annotations(
-    metadata: &Value,
-    _content: &str,
-) -> Option<Vec<ChatCompletionResponseMessageAnnotation>> {
+fn grounding_annotations(metadata: &Value, _content: &str) -> Option<Vec<Annotation>> {
     let supports = metadata.get("groundingSupports")?.as_array()?;
     let chunks = metadata.get("groundingChunks")?.as_array()?;
     let mut annotations = Vec::new();
@@ -1444,7 +1415,7 @@ fn grounding_annotations(
                 .and_then(|chunk| chunk.get("web"))
                 .and_then(Value::as_object)
         {
-            annotations.push(ChatCompletionResponseMessageAnnotation::UrlCitation {
+            annotations.push(Annotation::UrlCitation {
                 url_citation: UrlCitation {
                     start_index,
                     end_index,
@@ -1659,28 +1630,21 @@ fn media_resolution(detail: Option<&ImageDetail>) -> Option<Value> {
     Some(json!({ "level": level }))
 }
 
-fn highest_media_resolution_level(
-    messages: &[ChatCompletionRequestMessage],
-) -> Option<&'static str> {
+fn highest_media_resolution_level(messages: &[ChatMessage]) -> Option<&'static str> {
     let mut best = None;
 
     for message in messages {
-        let ChatCompletionRequestMessage::User(message) = message else {
+        let ChatMessage::User(message) = message else {
             continue;
         };
-        let ChatCompletionRequestUserMessageContent::Array(parts) = &message.content else {
+        let UserContent::Parts(parts) = &message.content else {
             continue;
         };
         for part in parts {
             let detail = match part {
-                ChatCompletionRequestUserMessageContentPart::ImageUrl(image) => {
-                    image.image_url.detail.as_ref()
-                }
-                ChatCompletionRequestUserMessageContentPart::File(file) => {
-                    file.file.detail.as_ref()
-                }
-                ChatCompletionRequestUserMessageContentPart::Text(_)
-                | ChatCompletionRequestUserMessageContentPart::InputAudio(_) => None,
+                UserContentPart::Image(image) => image.image.detail.as_ref(),
+                UserContentPart::File(file) => file.file.detail.as_ref(),
+                UserContentPart::Text(_) | UserContentPart::Audio(_) => None,
             };
             if detail.is_some_and(|detail| {
                 media_resolution_level(detail).is_some()
@@ -1715,22 +1679,21 @@ fn image_detail_priority(detail: &ImageDetail) -> u8 {
     }
 }
 
-fn gemini_video_metadata(value: &Value) -> Option<Value> {
-    let object = value.as_object()?;
+fn gemini_video_metadata(value: &VideoMetadata) -> Option<Value> {
     let mut metadata = Map::new();
-    for (key, value) in object {
-        match key.as_str() {
-            "fps" => {
-                metadata.insert("fps".to_string(), value.clone());
-            }
-            "start_offset" | "startOffset" => {
-                metadata.insert("startOffset".to_string(), value.clone());
-            }
-            "end_offset" | "endOffset" => {
-                metadata.insert("endOffset".to_string(), value.clone());
-            }
-            _ => {}
-        }
+    if let Some(fps) = value.fps
+        && let Some(number) = Number::from_f64(fps as f64)
+    {
+        metadata.insert("fps".to_string(), Value::Number(number));
+    }
+    if let Some(start_offset) = &value.start_offset {
+        metadata.insert(
+            "startOffset".to_string(),
+            Value::String(start_offset.clone()),
+        );
+    }
+    if let Some(end_offset) = &value.end_offset {
+        metadata.insert("endOffset".to_string(), Value::String(end_offset.clone()));
     }
     (!metadata.is_empty()).then_some(Value::Object(metadata))
 }

@@ -1,4 +1,3 @@
-mod api;
 mod cache_control;
 mod content;
 mod impls;
@@ -9,7 +8,6 @@ mod response;
 mod streaming;
 mod tools;
 
-pub use api::*;
 pub use cache_control::*;
 pub use content::*;
 pub use messages::*;

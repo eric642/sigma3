@@ -1,13 +1,8 @@
 use sigma::types::chat::{
-    ChatCompletionMessageToolCall, ChatCompletionMessageToolCalls, ChatCompletionNamedToolChoice,
-    ChatCompletionRequestAssistantMessage, ChatCompletionRequestAssistantMessageContent,
-    ChatCompletionRequestDeveloperMessage, ChatCompletionRequestDeveloperMessageContent,
-    ChatCompletionRequestMessage, ChatCompletionRequestMessageContentPartImage,
-    ChatCompletionRequestMessageContentPartText, ChatCompletionRequestSystemMessage,
-    ChatCompletionRequestSystemMessageContent, ChatCompletionRequestToolMessageContent,
-    ChatCompletionRequestUserMessage, ChatCompletionRequestUserMessageContent,
-    ChatCompletionRequestUserMessageContentPart, ChatCompletionTool, ChatCompletionTools,
-    CustomToolChatCompletions, CustomToolProperties, Role,
+    AssistantContent, AssistantMessage, ChatMessage, CustomToolDefinition, CustomToolProperties,
+    FunctionTool, FunctionToolCall, ImagePart, NamedFunctionToolChoice, Role, SystemMessage,
+    TextContent, TextPart, ToolCall, ToolContent, ToolDefinition, UserContent, UserContentPart,
+    UserMessage,
 };
 use sigma::types::shared::{FunctionCall, FunctionName, FunctionObject, ImageUrl};
 
@@ -21,81 +16,67 @@ fn role_display() {
 
 #[test]
 fn user_message_from_str_and_string() {
-    let m: ChatCompletionRequestUserMessage = "hi".into();
-    assert!(matches!(
-        m.content,
-        ChatCompletionRequestUserMessageContent::Text(_)
-    ));
-    let m2: ChatCompletionRequestUserMessage = String::from("hi").into();
+    let m: UserMessage = "hi".into();
+    assert!(matches!(m.content, UserContent::Text(_)));
+
+    let m2: UserMessage = String::from("hi").into();
     assert_eq!(m, m2);
 }
 
 #[test]
-fn user_message_into_request_message() {
-    let m: ChatCompletionRequestMessage = ChatCompletionRequestUserMessage::from("hi").into();
-    assert!(matches!(m, ChatCompletionRequestMessage::User(_)));
+fn user_message_into_chat_message() {
+    let m: ChatMessage = UserMessage::from("hi").into();
+
+    assert!(matches!(m, ChatMessage::User(_)));
 }
 
 #[test]
 fn assistant_message_from_str() {
-    let m: ChatCompletionRequestAssistantMessage = "hi".into();
-    assert!(matches!(
-        m.content,
-        Some(ChatCompletionRequestAssistantMessageContent::Text(_))
-    ));
+    let m: AssistantMessage = "hi".into();
+
+    assert!(matches!(m.content, Some(AssistantContent::Text(_))));
 }
 
 #[test]
 fn user_content_from_parts_array() {
-    let parts: Vec<ChatCompletionRequestUserMessageContentPart> =
-        vec![ChatCompletionRequestUserMessageContentPart::Text(
-            ChatCompletionRequestMessageContentPartText {
-                text: "hi".into(),
-                cache_control: None,
-            },
-        )];
-    let c: ChatCompletionRequestUserMessageContent = parts.into();
-    assert!(matches!(
-        c,
-        ChatCompletionRequestUserMessageContent::Array(_)
-    ));
+    let parts: Vec<UserContentPart> = vec![TextPart::new("hi").into()];
+
+    let c: UserContent = parts.into();
+
+    assert!(matches!(c, UserContent::Parts(_)));
 }
 
 #[test]
-fn user_part_from_text_image_audio() {
-    let _: ChatCompletionRequestUserMessageContentPart =
-        ChatCompletionRequestMessageContentPartText {
-            text: "hi".into(),
-            cache_control: None,
-        }
-        .into();
-    let _: ChatCompletionRequestUserMessageContentPart =
-        ChatCompletionRequestMessageContentPartImage {
-            image_url: ImageUrl {
-                url: "u".into(),
-                detail: None,
-            },
-            cache_control: None,
-        }
-        .into();
+fn user_part_from_text_and_image() {
+    let _: UserContentPart = TextPart::new("hi").into();
+    let _: UserContentPart = ImagePart {
+        image: ImageUrl {
+            url: "u".into(),
+            detail: None,
+        },
+        cache_control: None,
+    }
+    .into();
 }
 
 #[test]
 fn text_part_from_str() {
-    let t: ChatCompletionRequestMessageContentPartText = "hi".into();
+    let t: TextPart = "hi".into();
+
     assert_eq!(t.text, "hi");
 }
 
 #[test]
 fn image_url_from_str_uses_default_detail() {
     let u: ImageUrl = "https://x.test".into();
+
     assert_eq!(u.url, "https://x.test");
     assert_eq!(u.detail, None);
 }
 
 #[test]
 fn image_url_into_image_part() {
-    let _: ChatCompletionRequestMessageContentPartImage = ImageUrl {
+    let _: ImagePart = ImageUrl {
         url: "u".into(),
         detail: None,
     }
@@ -106,41 +87,37 @@ fn image_url_into_image_part() {
 fn function_name_and_named_choice_from_str() {
     let n: FunctionName = "f".into();
     assert_eq!(n.name, "f");
-    let c: ChatCompletionNamedToolChoice = "f".into();
+
+    let c: NamedFunctionToolChoice = "f".into();
     assert_eq!(c.function.name, "f");
 }
 
 #[test]
-fn vec_request_message_from_individual_messages() {
-    let v: Vec<ChatCompletionRequestMessage> =
-        ChatCompletionRequestSystemMessage::from("sys").into();
+fn vec_chat_message_from_individual_messages() {
+    let v: Vec<ChatMessage> = SystemMessage::from("sys").into();
     assert_eq!(v.len(), 1);
-    let v: Vec<ChatCompletionRequestMessage> = ChatCompletionRequestUserMessage::from("hi").into();
-    assert_eq!(v.len(), 1);
-    let v: Vec<ChatCompletionRequestMessage> =
-        ChatCompletionRequestDeveloperMessage::from("dev").into();
-    assert_eq!(v.len(), 1);
-    let v: Vec<ChatCompletionRequestMessage> =
-        ChatCompletionRequestAssistantMessage::from("a").into();
+
+    let v: Vec<ChatMessage> = UserMessage::from("hi").into();
     assert_eq!(v.len(), 1);
 }
 
 #[test]
 fn tool_call_into_message_tool_calls() {
-    let t = ChatCompletionMessageToolCall {
+    let t = FunctionToolCall {
         id: "x".into(),
         function: FunctionCall {
             name: "f".into(),
             arguments: "{}".into(),
         },
-        provider_specific_fields: None,
+        reasoning: None,
     };
-    let _: ChatCompletionMessageToolCalls = t.into();
+
+    let _: ToolCall = t.into();
 }
 
 #[test]
-fn tool_into_vec_chat_completion_tools() {
-    let t = ChatCompletionTool {
+fn tool_into_vec_chat_tools() {
+    let t = FunctionTool {
         function: FunctionObject {
             name: "f".into(),
             description: None,
@@ -148,20 +125,19 @@ fn tool_into_vec_chat_completion_tools() {
             strict: None,
         },
     };
-    let v: Vec<ChatCompletionTools> = t.into();
+    let v: Vec<ToolDefinition> = t.into();
     assert_eq!(v.len(), 1);
 
-    let c = CustomToolChatCompletions {
+    let c = CustomToolDefinition {
         custom: CustomToolProperties::default(),
     };
-    let v: Vec<ChatCompletionTools> = c.into();
+    let v: Vec<ToolDefinition> = c.into();
     assert_eq!(v.len(), 1);
 }
 
 #[test]
 fn defaults_for_message_contents() {
-    let _ = ChatCompletionRequestUserMessageContent::default();
-    let _ = ChatCompletionRequestSystemMessageContent::default();
-    let _ = ChatCompletionRequestDeveloperMessageContent::default();
-    let _ = ChatCompletionRequestToolMessageContent::default();
+    let _ = UserContent::default();
+    let _ = TextContent::default();
+    let _ = ToolContent::default();
 }

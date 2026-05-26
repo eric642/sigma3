@@ -13,7 +13,7 @@ use crate::provider::{
     ChatAdapterContext, ChatAdapterRequest, ChatStream, ProviderCatalog, ProviderInit, StreamMode,
     deployment_model_info, response_to_stream_chunk,
 };
-use crate::types::chat::{CreateChatCompletionRequest, CreateChatCompletionResponse};
+use crate::types::chat::{ChatRequest, ChatResponse};
 use crate::{
     DeploymentId, ModelDeploymentConfig, ModelName, ModelRef, ProviderDriver, ProviderId,
     SigmaError, SigmaResult,
@@ -198,10 +198,10 @@ pub struct ChatNamespace<'a> {
 impl ChatNamespace<'_> {
     /// Creates one chat completion.
     ///
-    /// The call resolves [`CreateChatCompletionRequest::model`] through
+    /// The call resolves [`ChatRequest::model`] through
     /// deployment routing, runs the provider adapter lifecycle, sends the signed
     /// request with the configured HTTP client, and transforms the provider
-    /// response back into sigma's OpenAI-compatible response type.
+    /// response back into sigma's semantic chat response type.
     ///
     /// # Errors
     ///
@@ -209,8 +209,8 @@ impl ChatNamespace<'_> {
     /// provider response errors.
     pub async fn create(
         &self,
-        request: &CreateChatCompletionRequest,
-    ) -> SigmaResult<crate::types::chat::CreateChatCompletionResponse> {
+        request: &ChatRequest,
+    ) -> SigmaResult<crate::types::chat::ChatResponse> {
         self.client.create_chat_completion(request).await
     }
 
@@ -224,10 +224,7 @@ impl ChatNamespace<'_> {
     ///
     /// Returns routing, unsupported parameter, provider adapter, HTTP, or
     /// provider response errors.
-    pub async fn create_stream(
-        &self,
-        request: &CreateChatCompletionRequest,
-    ) -> SigmaResult<ChatStream> {
+    pub async fn create_stream(&self, request: &ChatRequest) -> SigmaResult<ChatStream> {
         self.client.create_chat_completion_stream(request).await
     }
 }
@@ -243,8 +240,8 @@ struct ResolvedRoute {
 impl Client {
     async fn create_chat_completion(
         &self,
-        request: &CreateChatCompletionRequest,
-    ) -> SigmaResult<crate::types::chat::CreateChatCompletionResponse> {
+        request: &ChatRequest,
+    ) -> SigmaResult<crate::types::chat::ChatResponse> {
         let route = self.resolve_route(&request.model)?;
 
         if let Some(custom_chat) = route.provider.custom_chat() {
@@ -266,7 +263,7 @@ impl Client {
 
     async fn create_chat_completion_stream(
         &self,
-        request: &CreateChatCompletionRequest,
+        request: &ChatRequest,
     ) -> SigmaResult<ChatStream> {
         let route = self.resolve_route(&request.model)?;
 
@@ -346,7 +343,7 @@ impl Client {
 
     fn prepare_provider_request<'a>(
         &self,
-        request: &'a CreateChatCompletionRequest,
+        request: &'a ChatRequest,
         route: &'a ResolvedRoute,
         adapter: &'a dyn crate::ChatCompletionAdapter,
         stream_behavior: Option<crate::StreamBehavior>,
@@ -364,7 +361,7 @@ impl Client {
         let rules =
             self.resolve_chat_param_rules(context.provider, context.provider_model, adapter);
         let params = self.apply_chat_param_rules(context.provider, params, &rules)?;
-        let params = adapter.map_openai_params(params)?;
+        let params = adapter.map_chat_params(params)?;
         adapter.validate_environment()?;
 
         let provider_options = request.provider_options.get(context.provider);
@@ -388,7 +385,7 @@ impl Client {
 
     fn chat_params(
         &self,
-        request: &CreateChatCompletionRequest,
+        request: &ChatRequest,
         deployment: Option<&ModelDeploymentConfig>,
     ) -> SigmaResult<ChatParameterMap> {
         let mut params = deployment
@@ -405,7 +402,7 @@ impl Client {
         provider_model: &ModelName,
         adapter: &dyn crate::ChatCompletionAdapter,
     ) -> ResolvedChatParamRules {
-        let mut rules = ResolvedChatParamRules::new(adapter.supported_openai_params());
+        let mut rules = ResolvedChatParamRules::new(adapter.supported_chat_params());
         if let Some(config) = self.inner.provider_chat_params.get(provider) {
             rules.apply_provider_config(config);
             if let Some(model_config) = config.models.get(provider_model) {
@@ -713,10 +710,7 @@ impl ResolvedRoute {
         }
     }
 
-    fn to_routed_request<'a>(
-        &'a self,
-        request: &'a CreateChatCompletionRequest,
-    ) -> crate::RoutedChatRequest<'a> {
+    fn to_routed_request<'a>(&'a self, request: &'a ChatRequest) -> crate::RoutedChatRequest<'a> {
         crate::RoutedChatRequest {
             provider: self.provider.id(),
             deployment: self.deployment.as_ref().map(|deployment| &deployment.id),
@@ -738,7 +732,7 @@ fn transform_response_or_error(
     adapter: &dyn crate::ChatCompletionAdapter,
     context: &crate::ChatAdapterContext<'_>,
     response: crate::ProviderResponse,
-) -> SigmaResult<CreateChatCompletionResponse> {
+) -> SigmaResult<ChatResponse> {
     if response.status.is_success() {
         adapter.transform_response(context, response)
     } else {

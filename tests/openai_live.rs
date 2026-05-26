@@ -8,15 +8,10 @@ use futures_util::StreamExt;
 use http::StatusCode;
 use serde_json::{Value, json};
 use sigma::types::chat::{
-    ChatCompletionMessageToolCalls, ChatCompletionNamedToolChoice,
-    ChatCompletionRequestDeveloperMessage, ChatCompletionRequestDeveloperMessageContent,
-    ChatCompletionRequestMessage, ChatCompletionRequestMessageContentPartText,
-    ChatCompletionRequestUserMessage, ChatCompletionRequestUserMessageContent,
-    ChatCompletionRequestUserMessageContentPart, ChatCompletionStreamOptions, ChatCompletionTool,
-    ChatCompletionToolChoiceOption, ChatCompletionTools, CreateChatCompletionRequest,
-    CreateChatCompletionRequestArgs, CreateChatCompletionRequestParams,
-    CreateChatCompletionRequestParamsArgs, CreateChatCompletionResponse, PredictionContent,
-    PredictionContentContent, PromptCacheRetention, ServiceTier,
+    ChatMessage, ChatRequest, ChatRequestParams, ChatResponse, DeveloperMessage, FunctionTool,
+    NamedFunctionToolChoice, PredictionContent, PredictionContentValue, PromptCacheRetention,
+    ServiceTier, StreamOptions, TextContent, TextPart, ToolCall, ToolChoice, ToolDefinition,
+    UserContent, UserContentPart, UserMessage,
 };
 use sigma::types::shared::{FunctionName, FunctionObject, ResponseFormat};
 use sigma::{
@@ -184,7 +179,7 @@ fn live_client_config(config: &LiveOpenAiConfig) -> ClientConfig {
     }
 }
 
-fn live_request(max_completion_tokens: u32) -> SigmaResult<CreateChatCompletionRequest> {
+fn live_request(max_completion_tokens: u32) -> SigmaResult<ChatRequest> {
     request_with(
         vec![user_text_message("Reply with the single word pong.")],
         ModelRef::model("openai-live-model"),
@@ -205,78 +200,57 @@ fn live_setup() -> SigmaResult<Option<(Client, LiveOpenAiConfig)>> {
     Ok(Some((client, config)))
 }
 
-fn user_text_message(content: &str) -> ChatCompletionRequestMessage {
-    ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage::from(content))
+fn user_text_message(content: &str) -> ChatMessage {
+    ChatMessage::User(UserMessage::from(content))
 }
 
 fn request_with(
-    messages: Vec<ChatCompletionRequestMessage>,
+    messages: Vec<ChatMessage>,
     model: ModelRef,
     max_completion_tokens: u32,
-    update_params: impl FnOnce(&mut CreateChatCompletionRequestParams),
-) -> SigmaResult<CreateChatCompletionRequest> {
-    let mut params = CreateChatCompletionRequestParamsArgs::default()
-        .max_completion_tokens(max_completion_tokens)
-        .build()?;
+    update_params: impl FnOnce(&mut ChatRequestParams),
+) -> SigmaResult<ChatRequest> {
+    let mut params = ChatRequestParams {
+        max_completion_tokens: Some(max_completion_tokens),
+        ..Default::default()
+    };
     update_params(&mut params);
 
-    CreateChatCompletionRequestArgs::default()
-        .messages(messages)
-        .model(model)
-        .params(params)
-        .build()
+    Ok(ChatRequest::new(model, messages).with_params(params))
 }
 
-fn content_part_request(
-    content: &str,
-    config: &LiveOpenAiConfig,
-) -> SigmaResult<CreateChatCompletionRequest> {
+fn content_part_request(content: &str, config: &LiveOpenAiConfig) -> SigmaResult<ChatRequest> {
     request_with(
-        vec![ChatCompletionRequestMessage::User(
-            ChatCompletionRequestUserMessage {
-                content: ChatCompletionRequestUserMessageContent::Array(vec![
-                    ChatCompletionRequestUserMessageContentPart::Text(
-                        ChatCompletionRequestMessageContentPartText {
-                            text: content.to_string(),
-                            cache_control: None,
-                        },
-                    ),
-                ]),
-                name: None,
-            },
-        )],
+        vec![ChatMessage::User(UserMessage {
+            content: UserContent::Parts(vec![UserContentPart::Text(TextPart {
+                text: content.to_string(),
+                cache_control: None,
+            })]),
+            name: None,
+        })],
         ModelRef::model("openai-live-model"),
         config.max_completion_tokens,
         |_| {},
     )
 }
 
-fn named_user_request(
-    name: &str,
-    config: &LiveOpenAiConfig,
-) -> SigmaResult<CreateChatCompletionRequest> {
+fn named_user_request(name: &str, config: &LiveOpenAiConfig) -> SigmaResult<ChatRequest> {
     request_with(
-        vec![ChatCompletionRequestMessage::User(
-            ChatCompletionRequestUserMessage {
-                content: ChatCompletionRequestUserMessageContent::Text(
-                    "Reply briefly.".to_string(),
-                ),
-                name: Some(name.to_string()),
-            },
-        )],
+        vec![ChatMessage::User(UserMessage {
+            content: UserContent::Text("Reply briefly.".to_string()),
+            name: Some(name.to_string()),
+        })],
         ModelRef::model("openai-live-model"),
         config.max_completion_tokens,
         |_| {},
     )
 }
 
-fn developer_request(config: &LiveOpenAiConfig) -> SigmaResult<CreateChatCompletionRequest> {
+fn developer_request(config: &LiveOpenAiConfig) -> SigmaResult<ChatRequest> {
     request_with(
         vec![
-            ChatCompletionRequestMessage::Developer(ChatCompletionRequestDeveloperMessage {
-                content: ChatCompletionRequestDeveloperMessageContent::Text(
-                    "Keep the answer short.".to_string(),
-                ),
+            ChatMessage::Developer(DeveloperMessage {
+                content: TextContent::Text("Keep the answer short.".to_string()),
                 name: None,
             }),
             user_text_message("Reply with pong."),
@@ -287,13 +261,13 @@ fn developer_request(config: &LiveOpenAiConfig) -> SigmaResult<CreateChatComplet
     )
 }
 
-fn stream_options_request(config: &LiveOpenAiConfig) -> SigmaResult<CreateChatCompletionRequest> {
+fn stream_options_request(config: &LiveOpenAiConfig) -> SigmaResult<ChatRequest> {
     request_with(
         vec![user_text_message("Reply with pong.")],
         ModelRef::model("openai-live-model"),
         config.max_completion_tokens,
         |params| {
-            params.stream_options = Some(ChatCompletionStreamOptions {
+            params.stream_options = Some(StreamOptions {
                 include_usage: Some(true),
                 include_obfuscation: None,
             });
@@ -301,15 +275,13 @@ fn stream_options_request(config: &LiveOpenAiConfig) -> SigmaResult<CreateChatCo
     )
 }
 
-fn full_stream_usage_request(
-    config: &LiveOpenAiConfig,
-) -> SigmaResult<CreateChatCompletionRequest> {
+fn full_stream_usage_request(config: &LiveOpenAiConfig) -> SigmaResult<ChatRequest> {
     request_with(
         vec![user_text_message("Reply exactly with sigma-stream-pong.")],
         ModelRef::model("openai-live-model"),
         config.max_completion_tokens.max(8),
         |params| {
-            params.stream_options = Some(ChatCompletionStreamOptions {
+            params.stream_options = Some(StreamOptions {
                 include_usage: Some(true),
                 include_obfuscation: None,
             });
@@ -317,7 +289,7 @@ fn full_stream_usage_request(
     )
 }
 
-fn token_logprobs_request(config: &LiveOpenAiConfig) -> SigmaResult<CreateChatCompletionRequest> {
+fn token_logprobs_request(config: &LiveOpenAiConfig) -> SigmaResult<ChatRequest> {
     request_with(
         vec![user_text_message("Reply with exactly one short word.")],
         ModelRef::model("openai-live-model"),
@@ -329,7 +301,7 @@ fn token_logprobs_request(config: &LiveOpenAiConfig) -> SigmaResult<CreateChatCo
     )
 }
 
-fn prompt_cache_request() -> SigmaResult<CreateChatCompletionRequest> {
+fn prompt_cache_request() -> SigmaResult<ChatRequest> {
     request_with(
         vec![user_text_message(&prompt_cache_prompt())],
         ModelRef::model("openai-live-model"),
@@ -341,7 +313,7 @@ fn prompt_cache_request() -> SigmaResult<CreateChatCompletionRequest> {
     )
 }
 
-fn tool_prompt_cache_request() -> SigmaResult<CreateChatCompletionRequest> {
+fn tool_prompt_cache_request() -> SigmaResult<ChatRequest> {
     request_with(
         vec![user_text_message(&tool_prompt_cache_prompt())],
         ModelRef::model("openai-live-model"),
@@ -374,7 +346,7 @@ fn tool_prompt_cache_prompt() -> String {
     format!("{stable_prefix}\n\nUse the {TOOL_FUNCTION_NAME} tool for city San Francisco.")
 }
 
-fn json_object_request(config: &LiveOpenAiConfig) -> SigmaResult<CreateChatCompletionRequest> {
+fn json_object_request(config: &LiveOpenAiConfig) -> SigmaResult<ChatRequest> {
     request_with(
         vec![user_text_message(
             "Return a JSON object with exactly one boolean field named ok.",
@@ -387,7 +359,7 @@ fn json_object_request(config: &LiveOpenAiConfig) -> SigmaResult<CreateChatCompl
     )
 }
 
-fn function_tool_request(config: &LiveOpenAiConfig) -> SigmaResult<CreateChatCompletionRequest> {
+fn function_tool_request(config: &LiveOpenAiConfig) -> SigmaResult<ChatRequest> {
     request_with(
         vec![user_text_message(
             "Use the weather lookup tool for city San Francisco.",
@@ -398,9 +370,7 @@ fn function_tool_request(config: &LiveOpenAiConfig) -> SigmaResult<CreateChatCom
     )
 }
 
-fn stream_function_tool_request(
-    config: &LiveOpenAiConfig,
-) -> SigmaResult<CreateChatCompletionRequest> {
+fn stream_function_tool_request(config: &LiveOpenAiConfig) -> SigmaResult<ChatRequest> {
     request_with(
         vec![user_text_message(
             "Use the weather lookup tool for city San Francisco.",
@@ -409,7 +379,7 @@ fn stream_function_tool_request(
         config.max_completion_tokens.max(64),
         |params| {
             configure_function_tool(params);
-            params.stream_options = Some(ChatCompletionStreamOptions {
+            params.stream_options = Some(StreamOptions {
                 include_usage: Some(true),
                 include_obfuscation: None,
             });
@@ -417,19 +387,17 @@ fn stream_function_tool_request(
     )
 }
 
-fn configure_function_tool(params: &mut CreateChatCompletionRequestParams) {
+fn configure_function_tool(params: &mut ChatRequestParams) {
     params.tools = Some(function_tools());
-    params.tool_choice = Some(ChatCompletionToolChoiceOption::Function(
-        ChatCompletionNamedToolChoice {
-            function: FunctionName {
-                name: TOOL_FUNCTION_NAME.to_string(),
-            },
+    params.tool_choice = Some(ToolChoice::Function(NamedFunctionToolChoice {
+        function: FunctionName {
+            name: TOOL_FUNCTION_NAME.to_string(),
         },
-    ));
+    }));
 }
 
-fn function_tools() -> Vec<ChatCompletionTools> {
-    vec![ChatCompletionTools::Function(ChatCompletionTool {
+fn function_tools() -> Vec<ToolDefinition> {
+    vec![ToolDefinition::Function(FunctionTool {
         function: FunctionObject {
             name: TOOL_FUNCTION_NAME.to_string(),
             description: Some("Look up the current weather for a city.".to_string()),
@@ -449,9 +417,7 @@ fn function_tools() -> Vec<ChatCompletionTools> {
     })]
 }
 
-fn safety_identifier_request(
-    config: &LiveOpenAiConfig,
-) -> SigmaResult<CreateChatCompletionRequest> {
+fn safety_identifier_request(config: &LiveOpenAiConfig) -> SigmaResult<ChatRequest> {
     request_with(
         vec![user_text_message("Reply with pong.")],
         ModelRef::model("openai-live-model"),
@@ -462,20 +428,20 @@ fn safety_identifier_request(
     )
 }
 
-fn prediction_request(config: &LiveOpenAiConfig) -> SigmaResult<CreateChatCompletionRequest> {
+fn prediction_request(config: &LiveOpenAiConfig) -> SigmaResult<ChatRequest> {
     request_with(
         vec![user_text_message("Return exactly: pong")],
         ModelRef::model("openai-live-model"),
         config.max_completion_tokens,
         |params| {
-            params.prediction = Some(PredictionContent::Content(PredictionContentContent::Text(
+            params.prediction = Some(PredictionContent::Content(PredictionContentValue::Text(
                 "pong".to_string(),
             )));
         },
     )
 }
 
-fn service_tier_request(config: &LiveOpenAiConfig) -> SigmaResult<CreateChatCompletionRequest> {
+fn service_tier_request(config: &LiveOpenAiConfig) -> SigmaResult<ChatRequest> {
     request_with(
         vec![user_text_message("Reply with pong.")],
         ModelRef::model("openai-live-model"),
@@ -486,18 +452,18 @@ fn service_tier_request(config: &LiveOpenAiConfig) -> SigmaResult<CreateChatComp
     )
 }
 
-fn stream_n_request(config: &LiveOpenAiConfig) -> SigmaResult<CreateChatCompletionRequest> {
+fn stream_n_request(config: &LiveOpenAiConfig) -> SigmaResult<ChatRequest> {
     request_with(
         vec![user_text_message("Say hello in one word.")],
         ModelRef::model("openai-live-model"),
         config.max_completion_tokens,
         |params| {
-            params.n = Some(2);
+            params.count = Some(2);
         },
     )
 }
 
-fn bad_model_request(config: &LiveOpenAiConfig) -> SigmaResult<CreateChatCompletionRequest> {
+fn bad_model_request(config: &LiveOpenAiConfig) -> SigmaResult<ChatRequest> {
     request_with(
         vec![user_text_message(
             "This request should fail because the model is invalid.",
@@ -508,7 +474,7 @@ fn bad_model_request(config: &LiveOpenAiConfig) -> SigmaResult<CreateChatComplet
     )
 }
 
-fn assert_chat_response_shape(response: &CreateChatCompletionResponse) {
+fn assert_chat_response_shape(response: &ChatResponse) {
     assert!(
         !response.id.is_empty() || !response.model.is_empty() || !response.object.is_empty(),
         "expected at least one identifying response field"
@@ -553,7 +519,7 @@ async fn collect_stream_text_and_usage(
     Ok((text, total_tokens))
 }
 
-fn assert_token_usage(response: &CreateChatCompletionResponse) {
+fn assert_token_usage(response: &ChatResponse) {
     let usage = response
         .usage
         .as_ref()
@@ -571,7 +537,7 @@ fn assert_token_usage(response: &CreateChatCompletionResponse) {
     );
 }
 
-fn assert_logprobs(response: &CreateChatCompletionResponse) {
+fn assert_logprobs(response: &ChatResponse) {
     let content = response.choices[0]
         .logprobs
         .as_ref()
@@ -585,7 +551,7 @@ fn assert_logprobs(response: &CreateChatCompletionResponse) {
     assert!(first.logprob.is_finite(), "expected finite token logprob");
 }
 
-fn cached_tokens(response: &CreateChatCompletionResponse) -> u32 {
+fn cached_tokens(response: &ChatResponse) -> u32 {
     response
         .usage
         .as_ref()
@@ -643,7 +609,7 @@ async fn collect_stream_function_tool_call(
     Ok(result)
 }
 
-fn assert_response_function_tool_call(response: &CreateChatCompletionResponse) {
+fn assert_response_function_tool_call(response: &ChatResponse) {
     assert_token_usage(response);
 
     let tool_calls = response.choices[0]
@@ -656,7 +622,7 @@ fn assert_response_function_tool_call(response: &CreateChatCompletionResponse) {
         .unwrap_or_else(|| panic!("expected at least one live OpenAI tool call"));
 
     match tool_call {
-        ChatCompletionMessageToolCalls::Function(call) => {
+        ToolCall::Function(call) => {
             assert!(!call.id.is_empty(), "expected non-empty tool call id");
             assert_eq!(call.function.name, TOOL_FUNCTION_NAME);
             assert_tool_arguments_json(&call.function.arguments);

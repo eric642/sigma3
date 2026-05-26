@@ -1,11 +1,6 @@
 use sigma::types::chat::{
-    ChatCompletionRequestAssistantMessage, ChatCompletionRequestAssistantMessageContent,
-    ChatCompletionRequestDeveloperMessage, ChatCompletionRequestDeveloperMessageContent,
-    ChatCompletionRequestMessage, ChatCompletionRequestMessageContentPartText,
-    ChatCompletionRequestSystemMessage, ChatCompletionRequestSystemMessageContent,
-    ChatCompletionRequestToolMessage, ChatCompletionRequestToolMessageContent,
-    ChatCompletionRequestUserMessage, ChatCompletionRequestUserMessageContent,
-    ChatCompletionRequestUserMessageContentPart, Role,
+    AssistantContent, AssistantMessage, ChatMessage, DeveloperMessage, Role, SystemMessage,
+    TextContent, TextPart, ToolContent, ToolMessage, UserContent, UserContentPart, UserMessage,
 };
 
 #[test]
@@ -20,77 +15,85 @@ fn role_default_is_user() {
 }
 
 #[test]
-fn user_message_with_string_content() {
-    let m = ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
-        content: ChatCompletionRequestUserMessageContent::Text("hi".into()),
+fn user_message_with_text_content() {
+    let m = ChatMessage::User(UserMessage {
+        content: UserContent::Text("hi".into()),
         name: None,
     });
+
     let s = serde_json::to_string(&m).unwrap();
-    assert_eq!(s, r#"{"role":"user","content":"hi"}"#);
+
+    assert_eq!(s, r#"{"role":"user","content":{"text":"hi"}}"#);
 }
 
 #[test]
-fn user_message_with_array_content() {
-    let m = ChatCompletionRequestUserMessage {
-        content: ChatCompletionRequestUserMessageContent::Array(vec![
-            ChatCompletionRequestUserMessageContentPart::Text(
-                ChatCompletionRequestMessageContentPartText {
-                    text: "hi".into(),
-                    cache_control: None,
-                },
-            ),
-        ]),
+fn user_message_with_parts_content() {
+    let m = UserMessage {
+        content: UserContent::Parts(vec![UserContentPart::Text(TextPart {
+            text: "hi".into(),
+            cache_control: None,
+        })]),
         name: None,
     };
+
     let s = serde_json::to_string(&m).unwrap();
-    assert_eq!(s, r#"{"content":[{"type":"text","text":"hi"}]}"#);
+
+    assert_eq!(s, r#"{"content":{"parts":[{"type":"text","text":"hi"}]}}"#);
 }
 
 #[test]
 fn system_developer_tool_round_trip() {
-    let s = ChatCompletionRequestSystemMessage {
-        content: ChatCompletionRequestSystemMessageContent::Text("sys".into()),
+    let s = SystemMessage {
+        content: TextContent::Text("sys".into()),
         name: None,
     };
-    assert_eq!(serde_json::to_string(&s).unwrap(), r#"{"content":"sys"}"#);
+    assert_eq!(
+        serde_json::to_string(&s).unwrap(),
+        r#"{"content":{"text":"sys"}}"#
+    );
 
-    let d = ChatCompletionRequestDeveloperMessage {
-        content: ChatCompletionRequestDeveloperMessageContent::Text("dev".into()),
+    let d = DeveloperMessage {
+        content: TextContent::Text("dev".into()),
         name: None,
     };
-    assert_eq!(serde_json::to_string(&d).unwrap(), r#"{"content":"dev"}"#);
+    assert_eq!(
+        serde_json::to_string(&d).unwrap(),
+        r#"{"content":{"text":"dev"}}"#
+    );
 
-    let t = ChatCompletionRequestToolMessage {
-        content: ChatCompletionRequestToolMessageContent::Text("ok".into()),
+    let t = ToolMessage {
+        content: ToolContent::Text("ok".into()),
         tool_call_id: "call_1".into(),
     };
     assert_eq!(
         serde_json::to_string(&t).unwrap(),
-        r#"{"content":"ok","tool_call_id":"call_1"}"#
+        r#"{"content":{"text":"ok"},"tool_call_id":"call_1"}"#
     );
 }
 
 #[test]
 fn assistant_minimal_skips_none() {
-    let a = ChatCompletionRequestAssistantMessage {
-        content: Some(ChatCompletionRequestAssistantMessageContent::Text(
-            "hi".into(),
-        )),
+    let a = AssistantMessage {
+        content: Some(AssistantContent::Text("hi".into())),
         refusal: None,
         name: None,
         audio: None,
         tool_calls: None,
-        thinking_blocks: None,
-        provider_specific_fields: None,
+        reasoning: None,
+        provider_context: None,
     };
+
     let s = serde_json::to_string(&a).unwrap();
-    assert_eq!(s, r#"{"content":"hi"}"#);
+
+    assert_eq!(s, r#"{"content":{"text":"hi"}}"#);
 }
 
 #[test]
 fn message_enum_round_trips_user_and_assistant() {
-    let json = r#"[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"}]"#;
-    let v: Vec<ChatCompletionRequestMessage> = serde_json::from_str(json).unwrap();
-    assert!(matches!(v[0], ChatCompletionRequestMessage::User(_)));
-    assert!(matches!(v[1], ChatCompletionRequestMessage::Assistant(_)));
+    let json = r#"[{"role":"user","content":{"text":"hi"}},{"role":"assistant","content":{"text":"hello"}}]"#;
+
+    let v: Vec<ChatMessage> = serde_json::from_str(json).unwrap();
+
+    assert!(matches!(v[0], ChatMessage::User(_)));
+    assert!(matches!(v[1], ChatMessage::Assistant(_)));
 }

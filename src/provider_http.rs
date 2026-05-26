@@ -11,7 +11,7 @@ use crate::SigmaResult;
 ///
 /// Each item is one raw provider stream frame or byte chunk. The provider's
 /// [`crate::ChatCompletionAdapter::transform_stream`] hook converts these bytes
-/// into OpenAI-compatible chat stream chunks.
+/// into semantic chat stream chunks.
 pub type ProviderByteStream = Pin<Box<dyn Stream<Item = SigmaResult<Bytes>> + Send + 'static>>;
 
 /// Provider endpoint selected by a chat adapter.
