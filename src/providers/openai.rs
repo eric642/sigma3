@@ -169,7 +169,7 @@ struct OpenAiChatBody<'a> {
     params: &'a ChatParameterMap,
     provider_model: &'a ModelName,
     messages: &'a [ChatCompletionRequestMessage],
-    body_overrides: Option<&'a ChatParameterMap>,
+    provider_options: Option<&'a ChatParameterMap>,
 }
 
 impl Serialize for OpenAiChatBody<'_> {
@@ -182,36 +182,36 @@ impl Serialize for OpenAiChatBody<'_> {
             .keys()
             .filter(|key| {
                 !is_generated_body_key(key.as_str())
-                    && !contains_body_override(self.body_overrides, key.as_str())
+                    && !contains_provider_option(self.provider_options, key.as_str())
             })
             .count();
 
-        if !contains_body_override(self.body_overrides, "model") {
+        if !contains_provider_option(self.provider_options, "model") {
             len += 1;
         }
-        if !contains_body_override(self.body_overrides, "messages") {
+        if !contains_provider_option(self.provider_options, "messages") {
             len += 1;
         }
-        if let Some(body_overrides) = self.body_overrides {
-            len += body_overrides.len();
+        if let Some(provider_options) = self.provider_options {
+            len += provider_options.len();
         }
 
         let mut map = serializer.serialize_map(Some(len))?;
         for (key, value) in self.params {
             if !is_generated_body_key(key.as_str())
-                && !contains_body_override(self.body_overrides, key.as_str())
+                && !contains_provider_option(self.provider_options, key.as_str())
             {
                 map.serialize_entry(key, value)?;
             }
         }
-        if !contains_body_override(self.body_overrides, "model") {
+        if !contains_provider_option(self.provider_options, "model") {
             map.serialize_entry("model", self.provider_model)?;
         }
-        if !contains_body_override(self.body_overrides, "messages") {
+        if !contains_provider_option(self.provider_options, "messages") {
             map.serialize_entry("messages", self.messages)?;
         }
-        if let Some(body_overrides) = self.body_overrides {
-            for (key, value) in body_overrides {
+        if let Some(provider_options) = self.provider_options {
+            for (key, value) in provider_options {
                 map.serialize_entry(key, value)?;
             }
         }
@@ -223,8 +223,8 @@ fn is_generated_body_key(key: &str) -> bool {
     key == "model" || key == "messages"
 }
 
-fn contains_body_override(body_overrides: Option<&ChatParameterMap>, key: &str) -> bool {
-    body_overrides.is_some_and(|body_overrides| body_overrides.contains_key(key))
+fn contains_provider_option(provider_options: Option<&ChatParameterMap>, key: &str) -> bool {
+    provider_options.is_some_and(|provider_options| provider_options.contains_key(key))
 }
 
 impl ChatCompletionAdapter for OpenAiChatAdapter {
@@ -256,7 +256,7 @@ impl ChatCompletionAdapter for OpenAiChatAdapter {
             params: &request.params,
             provider_model: request.context.provider_model,
             messages: request.messages,
-            body_overrides: request.body_overrides,
+            provider_options: request.provider_options,
         })
         .map_err(|err| SigmaError::ProviderTransform {
             provider: self.provider.clone(),

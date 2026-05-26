@@ -4,7 +4,7 @@ use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::config::{ChatParameterMap, ProviderMetadataMap};
+use crate::config::{ChatParameterMap, ProviderOptionsMap};
 use crate::error::SigmaError;
 use crate::model::ModelRef;
 use crate::types::chat::messages::ChatCompletionRequestMessage;
@@ -13,9 +13,7 @@ use crate::types::chat::options::{
     ResponseModalities, ServiceTier, Verbosity, WebSearchOptions,
 };
 use crate::types::chat::tools::{ChatCompletionToolChoiceOption, ChatCompletionTools};
-use crate::types::shared::{
-    AnthropicOutputConfig, AnthropicThinkingParam, ReasoningEffort, ResponseFormat,
-};
+use crate::types::shared::{AnthropicThinkingParam, ReasoningEffort, ResponseFormat};
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(untagged)]
@@ -56,21 +54,23 @@ pub struct CreateChatCompletionRequest {
     /// from model parameters in Rust.
     #[serde(flatten)]
     pub params: CreateChatCompletionRequestParams,
-    /// Provider-scoped final request body overrides.
+    /// Provider-scoped request options.
     ///
     /// The map key is a configured provider instance id, not a provider kind.
     /// For example, a Zhipu AI endpoint configured with
     /// `kind = "openai-compatible"` should use the provider id such as
-    /// `"zhipu"` here. When that provider is selected, its adapter
-    /// shallow-merges the matching object into the final provider request body
+    /// `"zhipu"` here. When that provider is selected, standard adapters
+    /// shallow-merge the matching object into the final provider request body
     /// after parameter mapping and adapter-generated fields.
     ///
     /// Values in this map have the highest request-body priority and may
     /// override generated fields such as `"model"`, `"messages"`, and
-    /// `"stream"`. To send a provider-native OpenAI-style `metadata` field,
-    /// include a `"metadata"` entry inside the provider's override object.
+    /// `"stream"`. Provider adapters may also reserve option keys for headers
+    /// or other provider-specific controls. To send a provider-native
+    /// OpenAI-style `metadata` field, include a `"metadata"` entry inside the
+    /// provider's options object.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub metadata: ProviderMetadataMap,
+    pub provider_options: ProviderOptionsMap,
 }
 
 /// OpenAI-compatible chat completion parameters.
@@ -182,41 +182,9 @@ pub struct CreateChatCompletionRequestParams {
     /// prefer [`CreateChatCompletionRequestParams::reasoning_effort`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<AnthropicThinkingParam>,
-    /// Anthropic context-management configuration.
-    ///
-    /// This is intentionally JSON-shaped because Anthropic beta schemas change
-    /// faster than sigma's stable public types. The Anthropic provider sends
-    /// this field as-is after applying LiteLLM-compatible beta headers.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub context_management: Option<Value>,
-    /// Anthropic MCP server definitions.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mcp_servers: Option<Vec<Value>>,
-    /// Anthropic container configuration for hosted tools and skills.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub container: Option<Value>,
-    /// Native Anthropic structured output schema.
-    ///
-    /// Callers that want portable JSON mode should usually use
-    /// [`CreateChatCompletionRequestParams::response_format`]. This field is
-    /// sent directly as Anthropic `output_format`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub output_format: Option<Value>,
-    /// Anthropic output behavior configuration.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub output_config: Option<AnthropicOutputConfig>,
     /// Anthropic cache-control request object.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<Value>,
-    /// Anthropic fast-mode selector.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub speed: Option<String>,
-    /// Additional Anthropic beta header values for this request.
-    ///
-    /// The Anthropic provider merges these with automatically inferred beta
-    /// values and configured static beta headers before sending the request.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub anthropic_beta: Option<Vec<String>>,
 }
 
 impl CreateChatCompletionRequest {
@@ -263,7 +231,7 @@ mod tests {
                     .build()
                     .unwrap(),
             )
-            .metadata(HashMap::from([(ProviderId::from("selected"), overrides)]))
+            .provider_options(HashMap::from([(ProviderId::from("selected"), overrides)]))
             .build()
             .unwrap();
         let mut expected = serde_json::to_value(&request)
@@ -273,13 +241,13 @@ mod tests {
             .clone();
         expected.remove("messages");
         expected.remove("model");
-        expected.remove("metadata");
+        expected.remove("provider_options");
 
         let params = request.chat_parameters().unwrap();
 
         assert!(!params.contains_key("messages"));
         assert!(!params.contains_key("model"));
-        assert!(!params.contains_key("metadata"));
+        assert!(!params.contains_key("provider_options"));
         assert_eq!(params, expected);
     }
 }

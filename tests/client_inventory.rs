@@ -156,8 +156,8 @@ fn fake_generated_body_key(key: &str) -> bool {
     key == "model" || key == "messages"
 }
 
-fn fake_contains_body_override(body_overrides: Option<&ChatParameterMap>, key: &str) -> bool {
-    body_overrides.is_some_and(|body_overrides| body_overrides.contains_key(key))
+fn fake_contains_provider_option(provider_options: Option<&ChatParameterMap>, key: &str) -> bool {
+    provider_options.is_some_and(|provider_options| provider_options.contains_key(key))
 }
 
 fn fake_chat_body_value(
@@ -165,28 +165,28 @@ fn fake_chat_body_value(
     params: &ChatParameterMap,
     provider_model: &ModelName,
     messages: &[ChatCompletionRequestMessage],
-    body_overrides: Option<&ChatParameterMap>,
+    provider_options: Option<&ChatParameterMap>,
 ) -> SigmaResult<Value> {
     let mut body = serde_json::Map::new();
     for (key, value) in params {
-        if !fake_generated_body_key(key) && !fake_contains_body_override(body_overrides, key) {
+        if !fake_generated_body_key(key) && !fake_contains_provider_option(provider_options, key) {
             body.insert(key.clone(), value.clone());
         }
     }
-    if !fake_contains_body_override(body_overrides, "model") {
+    if !fake_contains_provider_option(provider_options, "model") {
         body.insert(
             "model".to_string(),
             Value::String(provider_model.to_string()),
         );
     }
-    if !fake_contains_body_override(body_overrides, "messages") {
+    if !fake_contains_provider_option(provider_options, "messages") {
         body.insert(
             "messages".to_string(),
             fake_messages_to_value(provider, messages)?,
         );
     }
-    if let Some(body_overrides) = body_overrides {
-        body.extend(body_overrides.clone());
+    if let Some(provider_options) = provider_options {
+        body.extend(provider_options.clone());
     }
 
     Ok(Value::Object(body))
@@ -260,7 +260,7 @@ impl ChatCompletionAdapter for FakeChatAdapter {
             &request.params,
             request.context.provider_model,
             request.messages,
-            request.body_overrides,
+            request.provider_options,
         )?;
 
         Ok(ProviderRequest {
@@ -1207,7 +1207,7 @@ async fn provider_model_direct_routing_uses_provider_model_param_rules() {
 }
 
 #[tokio::test]
-async fn create_applies_selected_provider_metadata_after_adapter_mapping() {
+async fn create_applies_selected_provider_options_after_adapter_mapping() {
     let server = MockServer::start().await;
     let provider_id = "zhipu";
     mount_chat_response(&server, "http.execute", "ok").await;
@@ -1224,7 +1224,7 @@ async fn create_applies_selected_provider_metadata_after_adapter_mapping() {
     overrides.insert("temperature".to_string(), json!(0.9));
     overrides.insert("provider_native".to_string(), json!(true));
     request
-        .metadata
+        .provider_options
         .insert(ProviderId::from(provider_id), overrides);
 
     let response = client.chat().create(&request).await.unwrap();
@@ -1237,7 +1237,7 @@ async fn create_applies_selected_provider_metadata_after_adapter_mapping() {
 }
 
 #[tokio::test]
-async fn create_ignores_metadata_for_non_selected_provider() {
+async fn create_ignores_provider_options_for_non_selected_provider() {
     let server = MockServer::start().await;
     let provider_id = "selected-provider";
     mount_chat_response(&server, "http.execute", "ok").await;
@@ -1253,7 +1253,7 @@ async fn create_ignores_metadata_for_non_selected_provider() {
     overrides.insert("temperature".to_string(), json!(0.9));
     overrides.insert("provider_native".to_string(), json!(true));
     request
-        .metadata
+        .provider_options
         .insert(ProviderId::from("other-provider"), overrides);
 
     client.chat().create(&request).await.unwrap();
@@ -1264,7 +1264,7 @@ async fn create_ignores_metadata_for_non_selected_provider() {
 }
 
 #[tokio::test]
-async fn create_keeps_provider_body_structured_for_metadata() {
+async fn create_keeps_provider_body_structured_for_provider_options() {
     let server = MockServer::start().await;
     let provider_id = "p-structured-body";
     mount_chat_response(&server, "http.execute", "ok").await;
@@ -1278,7 +1278,7 @@ async fn create_keeps_provider_body_structured_for_metadata() {
     let mut overrides = ChatParameterMap::new();
     overrides.insert("provider_native".to_string(), json!(true));
     request
-        .metadata
+        .provider_options
         .insert(ProviderId::from(provider_id), overrides);
 
     let response = client.chat().create(&request).await.unwrap();
@@ -1318,7 +1318,7 @@ async fn create_lets_adapter_transform_developer_messages_in_request_body() {
 }
 
 #[tokio::test]
-async fn create_stream_metadata_can_override_injected_stream_param() {
+async fn create_stream_provider_options_can_override_injected_stream_param() {
     let server = MockServer::start().await;
     let provider_id = "p-stream-override";
     mount_bytes_response(
@@ -1337,7 +1337,7 @@ async fn create_stream_metadata_can_override_injected_stream_param() {
     let mut overrides = ChatParameterMap::new();
     overrides.insert("stream".to_string(), json!(false));
     request
-        .metadata
+        .provider_options
         .insert(ProviderId::from(provider_id), overrides);
 
     let mut stream = client.chat().create_stream(&request).await.unwrap();

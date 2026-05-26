@@ -194,7 +194,7 @@ impl ChatCompletionAdapter for AnthropicChatAdapter {
     ) -> SigmaResult<ProviderRequest> {
         let mut params = request.params;
 
-        let mut beta_values = self.collect_beta_values(&mut params);
+        let mut beta_values = self.collect_beta_values(&mut params, request.provider_options);
         let tool_maps = prepare_tools(&mut params)?;
         if tool_maps.has_rewrites() {
             apply_tool_choice_name_map(&mut params, &tool_maps.forward);
@@ -204,10 +204,17 @@ impl ChatCompletionAdapter for AnthropicChatAdapter {
         map_stop_sequences(&mut params);
         map_reasoning_effort(&mut params, request.context.provider_model)?;
         map_user_metadata(&mut params);
-        map_response_format(&mut params, request.context.provider_model)?;
+        if provider_options_contain(request.provider_options, "output_format") {
+            params.remove("response_format");
+        } else {
+            map_response_format(&mut params, request.context.provider_model)?;
+        }
         map_tool_choice(&mut params);
         map_web_search_tool(&mut params);
         infer_beta_headers(&params, &mut beta_values);
+        if let Some(provider_options) = request.provider_options {
+            infer_beta_headers(provider_options, &mut beta_values);
+        }
 
         let translated =
             translate_anthropic_messages(&self.provider, request.messages, &tool_maps.forward)?;
@@ -227,9 +234,11 @@ impl ChatCompletionAdapter for AnthropicChatAdapter {
                 body.insert(key, value);
             }
         }
-        if let Some(body_overrides) = request.body_overrides {
-            for (key, value) in body_overrides {
-                body.insert(key.clone(), value.clone());
+        if let Some(provider_options) = request.provider_options {
+            for (key, value) in provider_options {
+                if !is_internal_param(key) {
+                    body.insert(key.clone(), value.clone());
+                }
             }
         }
 
@@ -344,24 +353,35 @@ impl ChatCompletionAdapter for AnthropicChatAdapter {
 }
 
 impl AnthropicChatAdapter {
-    fn collect_beta_values(&self, params: &mut ChatParameterMap) -> BTreeSet<String> {
+    fn collect_beta_values(
+        &self,
+        params: &mut ChatParameterMap,
+        provider_options: Option<&ChatParameterMap>,
+    ) -> BTreeSet<String> {
         let mut beta_values = self.beta.iter().cloned().collect::<BTreeSet<_>>();
         if let Some(value) = params.remove("anthropic_beta") {
-            match value {
-                Value::String(value) => {
-                    insert_split_beta(&mut beta_values, &value);
-                }
-                Value::Array(values) => {
-                    for value in values {
-                        if let Some(value) = value.as_str() {
-                            insert_split_beta(&mut beta_values, value);
-                        }
-                    }
-                }
-                _ => {}
-            }
+            insert_beta_value(&mut beta_values, &value);
+        }
+        if let Some(value) = provider_options.and_then(|options| options.get("anthropic_beta")) {
+            insert_beta_value(&mut beta_values, value);
         }
         beta_values
+    }
+}
+
+fn insert_beta_value(beta_values: &mut BTreeSet<String>, value: &Value) {
+    match value {
+        Value::String(value) => {
+            insert_split_beta(beta_values, value);
+        }
+        Value::Array(values) => {
+            for value in values {
+                if let Some(value) = value.as_str() {
+                    insert_split_beta(beta_values, value);
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -731,6 +751,10 @@ fn map_response_format(params: &mut ChatParameterMap, model: &ModelName) -> Sigm
         );
     }
     Ok(())
+}
+
+fn provider_options_contain(provider_options: Option<&ChatParameterMap>, key: &str) -> bool {
+    provider_options.is_some_and(|provider_options| provider_options.contains_key(key))
 }
 
 fn supports_structured_output(model: &str) -> bool {
