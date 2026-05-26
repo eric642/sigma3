@@ -238,6 +238,7 @@ fn content_part_request(
                     ChatCompletionRequestUserMessageContentPart::Text(
                         ChatCompletionRequestMessageContentPartText {
                             text: content.to_string(),
+                            cache_control: None,
                         },
                     ),
                 ]),

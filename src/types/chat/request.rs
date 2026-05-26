@@ -17,6 +17,8 @@ use crate::types::shared::{
     AnthropicOutputConfig, AnthropicThinkingParam, ReasoningEffort, ResponseFormat,
 };
 
+use super::cache_control::CacheControl;
+
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(untagged)]
 pub enum Prompt {
@@ -205,9 +207,13 @@ pub struct CreateChatCompletionRequestParams {
     /// Anthropic output behavior configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_config: Option<AnthropicOutputConfig>,
-    /// Anthropic cache-control request object.
+    /// Request-level cache-control configuration.
+    ///
+    /// Use content part cache-control fields for explicit cache breakpoints.
+    /// Providers translate this semantic hint to their native request-level
+    /// cache-control shape when supported.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cache_control: Option<Value>,
+    pub cache_control: Option<CacheControl>,
     /// Anthropic fast-mode selector.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub speed: Option<String>,

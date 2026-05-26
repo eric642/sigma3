@@ -18,18 +18,18 @@ use crate::provider_http::{
     ProviderByteStream, ProviderEndpoint, ProviderRequest, ProviderResponse, SignedProviderRequest,
 };
 use crate::types::chat::{
-    ChatChoice, ChatChoiceStream, ChatCompletionMessageToolCall,
-    ChatCompletionMessageToolCallChunk, ChatCompletionMessageToolCalls,
-    ChatCompletionRequestAssistantMessage, ChatCompletionRequestAssistantMessageContent,
-    ChatCompletionRequestAssistantMessageContentPart, ChatCompletionRequestDeveloperMessageContent,
-    ChatCompletionRequestMessage, ChatCompletionRequestMessageContentPartFile,
-    ChatCompletionRequestMessageContentPartImage, ChatCompletionRequestSystemMessageContent,
-    ChatCompletionRequestToolMessage, ChatCompletionRequestToolMessageContent,
-    ChatCompletionRequestUserMessageContent, ChatCompletionRequestUserMessageContentPart,
-    ChatCompletionResponseMessage, ChatCompletionResponseMessageAnnotation,
-    ChatCompletionStreamResponseDelta, CompletionUsage, CreateChatCompletionResponse,
-    CreateChatCompletionStreamResponse, FinishReason, FunctionCallStream, FunctionType, Role,
-    UrlCitation,
+    CacheControl, CacheControlTtl, CacheControlType, ChatChoice, ChatChoiceStream,
+    ChatCompletionMessageToolCall, ChatCompletionMessageToolCallChunk,
+    ChatCompletionMessageToolCalls, ChatCompletionRequestAssistantMessage,
+    ChatCompletionRequestAssistantMessageContent, ChatCompletionRequestAssistantMessageContentPart,
+    ChatCompletionRequestDeveloperMessageContent, ChatCompletionRequestMessage,
+    ChatCompletionRequestMessageContentPartFile, ChatCompletionRequestMessageContentPartImage,
+    ChatCompletionRequestSystemMessageContent, ChatCompletionRequestToolMessage,
+    ChatCompletionRequestToolMessageContent, ChatCompletionRequestUserMessageContent,
+    ChatCompletionRequestUserMessageContentPart, ChatCompletionResponseMessage,
+    ChatCompletionResponseMessageAnnotation, ChatCompletionStreamResponseDelta, CompletionUsage,
+    CreateChatCompletionResponse, CreateChatCompletionStreamResponse, FinishReason,
+    FunctionCallStream, FunctionType, Role, UrlCitation,
 };
 use crate::types::shared::{
     AnthropicServerToolUse, AnthropicThinkingBlock, AnthropicThinkingParam, AnthropicThinkingType,
@@ -933,9 +933,7 @@ fn developer_content_to_value(
             .map(|part| match part {
                 crate::types::chat::ChatCompletionRequestDeveloperMessageContentPart::Text(
                     part,
-                ) => {
-                    json!({"type": "text", "text": part.text})
-                }
+                ) => text_content_block(&part.text, part.cache_control.as_ref()),
             })
             .collect(),
     }
@@ -950,7 +948,7 @@ fn system_content_to_value(content: &ChatCompletionRequestSystemMessageContent) 
             .iter()
             .map(|part| match part {
                 crate::types::chat::ChatCompletionRequestSystemMessageContentPart::Text(part) => {
-                    json!({"type": "text", "text": part.text})
+                    text_content_block(&part.text, part.cache_control.as_ref())
                 }
             })
             .collect(),
@@ -968,9 +966,10 @@ fn user_content_blocks(
         ChatCompletionRequestUserMessageContent::Array(parts) => parts
             .iter()
             .map(|part| match part {
-                ChatCompletionRequestUserMessageContentPart::Text(part) => {
-                    Ok(json!({"type": "text", "text": non_empty_text(&part.text)}))
-                }
+                ChatCompletionRequestUserMessageContentPart::Text(part) => Ok(text_content_block(
+                    non_empty_text(&part.text),
+                    part.cache_control.as_ref(),
+                )),
                 ChatCompletionRequestUserMessageContentPart::ImageUrl(part) => {
                     image_content_block(provider, part)
                 }
@@ -1017,7 +1016,10 @@ fn assistant_content_blocks(
                     match part {
                         ChatCompletionRequestAssistantMessageContentPart::Text(part) => {
                             if !part.text.is_empty() {
-                                content.push(json!({"type": "text", "text": part.text}));
+                                content.push(text_content_block(
+                                    &part.text,
+                                    part.cache_control.as_ref(),
+                                ));
                             }
                         }
                         ChatCompletionRequestAssistantMessageContentPart::Refusal(part) => {
@@ -1079,7 +1081,7 @@ fn tool_result_block(message: &ChatCompletionRequestToolMessage) -> Value {
                 .iter()
                 .map(|part| match part {
                     crate::types::chat::ChatCompletionRequestToolMessageContentPart::Text(part) => {
-                        json!({"type": "text", "text": part.text})
+                        text_content_block(&part.text, part.cache_control.as_ref())
                     }
                 })
                 .collect(),
@@ -1097,10 +1099,11 @@ fn image_content_block(
     part: &ChatCompletionRequestMessageContentPartImage,
 ) -> SigmaResult<Value> {
     source_from_url(provider, &part.image_url.url).map(|source| {
-        json!({
-            "type": "image",
-            "source": source
-        })
+        let mut block = Map::new();
+        block.insert("type".to_string(), Value::String("image".to_string()));
+        block.insert("source".to_string(), source);
+        insert_cache_control(&mut block, part.cache_control.as_ref());
+        Value::Object(block)
     })
 }
 
@@ -1109,10 +1112,14 @@ fn file_content_block(
     part: &ChatCompletionRequestMessageContentPartFile,
 ) -> SigmaResult<Value> {
     if let Some(file_id) = &part.file.file_id {
-        return Ok(json!({
-            "type": "document",
-            "source": {"type": "file", "file_id": file_id}
-        }));
+        let mut document = Map::new();
+        document.insert("type".to_string(), Value::String("document".to_string()));
+        document.insert(
+            "source".to_string(),
+            json!({"type": "file", "file_id": file_id}),
+        );
+        insert_cache_control(&mut document, part.cache_control.as_ref());
+        return Ok(Value::Object(document));
     }
     if let Some(file_data) = &part.file.file_data {
         let mut document = Map::new();
@@ -1121,6 +1128,7 @@ fn file_content_block(
         if let Some(filename) = &part.file.filename {
             document.insert("title".to_string(), Value::String(filename.clone()));
         }
+        insert_cache_control(&mut document, part.cache_control.as_ref());
         return Ok(Value::Object(document));
     }
     Err(SigmaError::ProviderTransform {
@@ -1154,6 +1162,39 @@ fn parse_data_uri(value: &str) -> Option<(&str, &str)> {
 
 fn non_empty_text(text: &str) -> &str {
     if text.is_empty() { " " } else { text }
+}
+
+fn text_content_block(text: &str, cache_control: Option<&CacheControl>) -> Value {
+    let mut block = Map::new();
+    block.insert("type".to_string(), Value::String("text".to_string()));
+    block.insert("text".to_string(), Value::String(text.to_string()));
+    insert_cache_control(&mut block, cache_control);
+    Value::Object(block)
+}
+
+fn insert_cache_control(block: &mut Map<String, Value>, cache_control: Option<&CacheControl>) {
+    if let Some(cache_control) = cache_control {
+        block.insert(
+            "cache_control".to_string(),
+            cache_control_to_value(cache_control),
+        );
+    }
+}
+
+fn cache_control_to_value(cache_control: &CacheControl) -> Value {
+    let mut value = Map::new();
+    let type_value = match cache_control.r#type {
+        CacheControlType::Ephemeral => "ephemeral",
+    };
+    value.insert("type".to_string(), Value::String(type_value.to_string()));
+    if let Some(ttl) = cache_control.ttl {
+        let ttl_value = match ttl {
+            CacheControlTtl::FiveMinutes => "5m",
+            CacheControlTtl::OneHour => "1h",
+        };
+        value.insert("ttl".to_string(), Value::String(ttl_value.to_string()));
+    }
+    Value::Object(value)
 }
 
 fn thinking_block_to_value(block: &AnthropicThinkingBlock) -> Value {

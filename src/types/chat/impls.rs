@@ -212,12 +212,18 @@ impl From<ChatCompletionRequestMessageContentPartAudio>
 
 impl From<&str> for ChatCompletionRequestMessageContentPartText {
     fn from(value: &str) -> Self {
-        Self { text: value.into() }
+        Self {
+            text: value.into(),
+            cache_control: None,
+        }
     }
 }
 impl From<String> for ChatCompletionRequestMessageContentPartText {
     fn from(value: String) -> Self {
-        Self { text: value }
+        Self {
+            text: value,
+            cache_control: None,
+        }
     }
 }
 
@@ -268,7 +274,10 @@ impl From<String> for ImageUrl {
 }
 impl From<ImageUrl> for ChatCompletionRequestMessageContentPartImage {
     fn from(value: ImageUrl) -> Self {
-        Self { image_url: value }
+        Self {
+            image_url: value,
+            cache_control: None,
+        }
     }
 }
 

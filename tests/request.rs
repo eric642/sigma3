@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde_json::json;
 use sigma::types::chat::{
-    ChatCompletionRequestMessage, ChatCompletionRequestUserMessage,
+    CacheControl, CacheControlTtl, ChatCompletionRequestMessage, ChatCompletionRequestUserMessage,
     ChatCompletionRequestUserMessageContent, CreateChatCompletionRequest,
     CreateChatCompletionRequestArgs, CreateChatCompletionRequestParamsArgs, Prompt,
     StopConfiguration,
@@ -115,4 +115,29 @@ fn create_request_params_flatten_into_request_json() {
     assert_eq!(value["temperature"], json!(0.7f32));
     assert_eq!(value["n"], json!(2));
     assert!(value.get("params").is_none());
+}
+
+#[test]
+fn create_request_params_serializes_typed_cache_control() {
+    let params = CreateChatCompletionRequestParamsArgs::default()
+        .cache_control(CacheControl::ephemeral_with_ttl(
+            CacheControlTtl::FiveMinutes,
+        ))
+        .build()
+        .unwrap();
+    let req = CreateChatCompletionRequestArgs::default()
+        .messages(vec![ChatCompletionRequestMessage::User(
+            ChatCompletionRequestUserMessage::from("hi"),
+        )])
+        .model("claude-public")
+        .params(params)
+        .build()
+        .unwrap();
+
+    let value = serde_json::to_value(&req).unwrap();
+
+    assert_eq!(
+        value["cache_control"],
+        json!({"type": "ephemeral", "ttl": "5m"})
+    );
 }

@@ -4,12 +4,15 @@ use futures_util::StreamExt;
 use http::StatusCode;
 use serde_json::{Value, json};
 use sigma::types::chat::{
-    ChatCompletionNamedToolChoice, ChatCompletionRequestMessage,
-    ChatCompletionRequestSystemMessage, ChatCompletionRequestSystemMessageContent,
+    CacheControl, ChatCompletionNamedToolChoice, ChatCompletionRequestMessage,
+    ChatCompletionRequestMessageContentPartFile, ChatCompletionRequestMessageContentPartImage,
+    ChatCompletionRequestMessageContentPartText, ChatCompletionRequestSystemMessage,
+    ChatCompletionRequestSystemMessageContent, ChatCompletionRequestSystemMessageContentPart,
     ChatCompletionRequestUserMessage, ChatCompletionRequestUserMessageContent,
     ChatCompletionRequestUserMessageContentPart, ChatCompletionTool,
     ChatCompletionToolChoiceOption, ChatCompletionTools, CreateChatCompletionRequest,
-    CreateChatCompletionRequestArgs, CreateChatCompletionRequestParamsArgs, FinishReason,
+    CreateChatCompletionRequestArgs, CreateChatCompletionRequestParamsArgs, FileObject,
+    FinishReason,
 };
 use sigma::types::shared::{FunctionName, FunctionObject, ImageUrl, ResponseFormat};
 use sigma::{
@@ -176,6 +179,7 @@ async fn anthropic_create_posts_messages_body_and_headers() {
                                 url: "data:image/png;base64,QUJD".to_string(),
                                 detail: None,
                             },
+                            cache_control: None,
                         },
                     ),
                 ]),
@@ -224,6 +228,108 @@ async fn anthropic_create_posts_messages_body_and_headers() {
         json!([
             {"type": "text", "text": "Describe it."},
             {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "QUJD"}}
+        ])
+    );
+}
+
+#[tokio::test]
+async fn anthropic_create_maps_content_part_cache_control() {
+    let server = MockServer::start().await;
+    mount_anthropic_response(
+        &server,
+        anthropic_response(vec![json!({"type": "text", "text": "ok"})], "end_turn"),
+    )
+    .await;
+    let client = Client::build(anthropic_config(
+        "anthropic-cache-control",
+        Some(server.uri()),
+        Some(SecretString::from("sk-ant-test")),
+        HashMap::new(),
+        Value::Null,
+    ))
+    .unwrap();
+    let request = CreateChatCompletionRequestArgs::default()
+        .messages(vec![
+            ChatCompletionRequestMessage::System(ChatCompletionRequestSystemMessage {
+                content: ChatCompletionRequestSystemMessageContent::Array(vec![
+                    ChatCompletionRequestSystemMessageContentPart::Text(
+                        ChatCompletionRequestMessageContentPartText {
+                            text: "Use cached policy.".to_string(),
+                            cache_control: Some(CacheControl::ephemeral()),
+                        },
+                    ),
+                ]),
+                name: None,
+            }),
+            ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
+                content: ChatCompletionRequestUserMessageContent::Array(vec![
+                    ChatCompletionRequestUserMessageContentPart::Text(
+                        ChatCompletionRequestMessageContentPartText {
+                            text: "Cached user text.".to_string(),
+                            cache_control: Some(CacheControl::ephemeral()),
+                        },
+                    ),
+                    ChatCompletionRequestUserMessageContentPart::ImageUrl(
+                        ChatCompletionRequestMessageContentPartImage {
+                            image_url: ImageUrl {
+                                url: "data:image/png;base64,QUJD".to_string(),
+                                detail: None,
+                            },
+                            cache_control: Some(CacheControl::ephemeral()),
+                        },
+                    ),
+                    ChatCompletionRequestUserMessageContentPart::File(
+                        ChatCompletionRequestMessageContentPartFile {
+                            file: FileObject {
+                                file_id: Some("file_123".to_string()),
+                                file_data: None,
+                                filename: None,
+                                format: None,
+                                detail: None,
+                                video_metadata: None,
+                            },
+                            cache_control: Some(CacheControl::ephemeral()),
+                        },
+                    ),
+                ]),
+                name: None,
+            }),
+        ])
+        .model(ModelRef::model("claude-public"))
+        .build()
+        .unwrap();
+
+    client.chat().create(&request).await.unwrap();
+
+    let body = last_body(&server).await;
+    assert_eq!(
+        body["system"],
+        json!([
+            {
+                "type": "text",
+                "text": "Use cached policy.",
+                "cache_control": {"type": "ephemeral"}
+            }
+        ])
+    );
+    assert_eq!(
+        body["messages"][0]["content"],
+        json!([
+            {
+                "type": "text",
+                "text": "Cached user text.",
+                "cache_control": {"type": "ephemeral"}
+            },
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": "image/png", "data": "QUJD"},
+                "cache_control": {"type": "ephemeral"}
+            },
+            {
+                "type": "document",
+                "source": {"type": "file", "file_id": "file_123"},
+                "cache_control": {"type": "ephemeral"}
+            }
         ])
     );
 }

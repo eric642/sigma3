@@ -4,15 +4,16 @@ use futures_util::StreamExt;
 use http::StatusCode;
 use serde_json::{Value, json};
 use sigma::types::chat::{
-    ChatCompletionMessageToolCalls, ChatCompletionNamedToolChoice, ChatCompletionRequestMessage,
-    ChatCompletionRequestMessageContentPartAudio, ChatCompletionRequestMessageContentPartFile,
-    ChatCompletionRequestMessageContentPartImage, ChatCompletionRequestMessageContentPartText,
-    ChatCompletionRequestSystemMessage, ChatCompletionRequestSystemMessageContent,
-    ChatCompletionRequestUserMessage, ChatCompletionRequestUserMessageContent,
-    ChatCompletionRequestUserMessageContentPart, ChatCompletionTool,
-    ChatCompletionToolChoiceOption, ChatCompletionTools, CreateChatCompletionRequest,
-    CreateChatCompletionRequestArgs, CreateChatCompletionRequestParamsArgs, FileObject,
-    FinishReason, InputAudio, InputAudioFormat, StopConfiguration,
+    CacheControl, ChatCompletionMessageToolCalls, ChatCompletionNamedToolChoice,
+    ChatCompletionRequestMessage, ChatCompletionRequestMessageContentPartAudio,
+    ChatCompletionRequestMessageContentPartFile, ChatCompletionRequestMessageContentPartImage,
+    ChatCompletionRequestMessageContentPartText, ChatCompletionRequestSystemMessage,
+    ChatCompletionRequestSystemMessageContent, ChatCompletionRequestUserMessage,
+    ChatCompletionRequestUserMessageContent, ChatCompletionRequestUserMessageContentPart,
+    ChatCompletionTool, ChatCompletionToolChoiceOption, ChatCompletionTools,
+    CreateChatCompletionRequest, CreateChatCompletionRequestArgs,
+    CreateChatCompletionRequestParamsArgs, FileObject, FinishReason, InputAudio, InputAudioFormat,
+    StopConfiguration,
 };
 use sigma::types::shared::{
     FunctionName, FunctionObject, ImageDetail, ImageUrl, ReasoningEffort, ResponseFormat,
@@ -168,6 +169,7 @@ async fn gemini_create_posts_generate_content_body_and_headers() {
                     ChatCompletionRequestUserMessageContentPart::Text(
                         ChatCompletionRequestMessageContentPartText {
                             text: "Describe this.".to_string(),
+                            cache_control: Some(CacheControl::ephemeral()),
                         },
                     ),
                     ChatCompletionRequestUserMessageContentPart::ImageUrl(
@@ -176,6 +178,7 @@ async fn gemini_create_posts_generate_content_body_and_headers() {
                                 url: "data:image/png;base64,AAAA".to_string(),
                                 detail: Some(ImageDetail::High),
                             },
+                            cache_control: Some(CacheControl::ephemeral()),
                         },
                     ),
                     ChatCompletionRequestUserMessageContentPart::InputAudio(
@@ -196,6 +199,7 @@ async fn gemini_create_posts_generate_content_body_and_headers() {
                                 detail: None,
                                 video_metadata: None,
                             },
+                            cache_control: Some(CacheControl::ephemeral()),
                         },
                     ),
                 ]),
@@ -218,6 +222,13 @@ async fn gemini_create_posts_generate_content_body_and_headers() {
         Some("gemini-test-key")
     );
     let body: Value = request.body_json().unwrap();
+    assert!(
+        body["contents"][0]["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|part| part.get("cache_control").is_none())
+    );
     assert_eq!(
         body["systemInstruction"],
         json!({"parts": [{"text": "Be concise."}]})

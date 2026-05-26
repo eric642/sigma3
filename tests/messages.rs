@@ -34,7 +34,10 @@ fn user_message_with_array_content() {
     let m = ChatCompletionRequestUserMessage {
         content: ChatCompletionRequestUserMessageContent::Array(vec![
             ChatCompletionRequestUserMessageContentPart::Text(
-                ChatCompletionRequestMessageContentPartText { text: "hi".into() },
+                ChatCompletionRequestMessageContentPartText {
+                    text: "hi".into(),
+                    cache_control: None,
+                },
             ),
         ]),
         name: None,

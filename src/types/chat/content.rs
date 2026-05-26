@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::SigmaError;
 use crate::types::shared::{ImageDetail, ImageUrl};
 
+use super::cache_control::CacheControl;
+
 #[derive(Debug, Serialize, Deserialize, Default, Clone, Builder, PartialEq)]
 #[builder(name = "ChatCompletionRequestMessageContentPartTextArgs")]
 #[builder(pattern = "mutable")]
@@ -12,6 +14,14 @@ use crate::types::shared::{ImageDetail, ImageUrl};
 #[builder(build_fn(error = "SigmaError"))]
 pub struct ChatCompletionRequestMessageContentPartText {
     pub text: String,
+    /// Provider cache-control metadata for this content block.
+    ///
+    /// Providers translate this semantic hint to their native cache-control
+    /// shape when supported. OpenAI-compatible providers serialize it as part
+    /// of the content block. Use array content parts when a text message needs
+    /// cache-control metadata.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
@@ -28,6 +38,13 @@ pub struct ChatCompletionRequestMessageContentPartRefusal {
 #[builder(build_fn(error = "SigmaError"))]
 pub struct ChatCompletionRequestMessageContentPartImage {
     pub image_url: ImageUrl,
+    /// Provider cache-control metadata for this content block.
+    ///
+    /// Providers translate this semantic hint to their native cache-control
+    /// shape when supported. OpenAI-compatible providers serialize it as part
+    /// of the content block.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
@@ -96,4 +113,11 @@ pub struct FileObject {
 #[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
 pub struct ChatCompletionRequestMessageContentPartFile {
     pub file: FileObject,
+    /// Provider cache-control metadata for this content block.
+    ///
+    /// Providers translate this semantic hint to their native cache-control
+    /// shape when supported. OpenAI-compatible providers serialize it as part
+    /// of the content block.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
 }

@@ -4,7 +4,7 @@ use futures_util::StreamExt;
 use http::StatusCode;
 use serde_json::{Value, json};
 use sigma::types::chat::{
-    ChatCompletionNamedToolChoice, ChatCompletionRequestDeveloperMessage,
+    CacheControl, ChatCompletionNamedToolChoice, ChatCompletionRequestDeveloperMessage,
     ChatCompletionRequestDeveloperMessageContent, ChatCompletionRequestMessage,
     ChatCompletionRequestMessageContentPartAudio, ChatCompletionRequestMessageContentPartFile,
     ChatCompletionRequestMessageContentPartImage, ChatCompletionRequestMessageContentPartText,
@@ -308,6 +308,7 @@ async fn openai_create_sends_multimodal_user_content_parts() {
                     ChatCompletionRequestUserMessageContentPart::Text(
                         ChatCompletionRequestMessageContentPartText {
                             text: "Describe these inputs.".to_string(),
+                            cache_control: Some(CacheControl::ephemeral()),
                         },
                     ),
                     ChatCompletionRequestUserMessageContentPart::ImageUrl(
@@ -316,6 +317,7 @@ async fn openai_create_sends_multimodal_user_content_parts() {
                                 url: "data:image/png;base64,AAAA".to_string(),
                                 detail: None,
                             },
+                            cache_control: Some(CacheControl::ephemeral()),
                         },
                     ),
                     ChatCompletionRequestUserMessageContentPart::InputAudio(
@@ -336,6 +338,7 @@ async fn openai_create_sends_multimodal_user_content_parts() {
                                 detail: None,
                                 video_metadata: None,
                             },
+                            cache_control: Some(CacheControl::ephemeral()),
                         },
                     ),
                 ]),
@@ -351,10 +354,10 @@ async fn openai_create_sends_multimodal_user_content_parts() {
     assert_eq!(
         last_body(&server).await["messages"][0]["content"],
         json!([
-            {"type": "text", "text": "Describe these inputs."},
-            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA", "detail": null}},
+            {"type": "text", "text": "Describe these inputs.", "cache_control": {"type": "ephemeral"}},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA", "detail": null}, "cache_control": {"type": "ephemeral"}},
             {"type": "input_audio", "input_audio": {"data": "UklGRg==", "format": "wav"}},
-            {"type": "file", "file": {"file_data": "data:application/pdf;base64,JVBERi0=", "filename": "paper.pdf"}},
+            {"type": "file", "file": {"file_data": "data:application/pdf;base64,JVBERi0=", "filename": "paper.pdf"}, "cache_control": {"type": "ephemeral"}},
         ])
     );
 }

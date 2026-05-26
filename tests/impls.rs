@@ -49,7 +49,10 @@ fn assistant_message_from_str() {
 fn user_content_from_parts_array() {
     let parts: Vec<ChatCompletionRequestUserMessageContentPart> =
         vec![ChatCompletionRequestUserMessageContentPart::Text(
-            ChatCompletionRequestMessageContentPartText { text: "hi".into() },
+            ChatCompletionRequestMessageContentPartText {
+                text: "hi".into(),
+                cache_control: None,
+            },
         )];
     let c: ChatCompletionRequestUserMessageContent = parts.into();
     assert!(matches!(
@@ -61,13 +64,18 @@ fn user_content_from_parts_array() {
 #[test]
 fn user_part_from_text_image_audio() {
     let _: ChatCompletionRequestUserMessageContentPart =
-        ChatCompletionRequestMessageContentPartText { text: "hi".into() }.into();
+        ChatCompletionRequestMessageContentPartText {
+            text: "hi".into(),
+            cache_control: None,
+        }
+        .into();
     let _: ChatCompletionRequestUserMessageContentPart =
         ChatCompletionRequestMessageContentPartImage {
             image_url: ImageUrl {
                 url: "u".into(),
                 detail: None,
             },
+            cache_control: None,
         }
         .into();
 }
