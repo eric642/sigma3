@@ -783,7 +783,7 @@ async fn compatible_create_does_not_append_chat_completions_twice() {
 }
 
 #[tokio::test]
-async fn compatible_create_sends_provider_metadata_from_provider_override() {
+async fn compatible_create_sends_provider_metadata_from_provider_options() {
     let server = MockServer::start().await;
     mount_json_response(
         &server,
@@ -805,7 +805,7 @@ async fn compatible_create_sends_provider_metadata_from_provider_override() {
     let mut overrides = ChatParameterMap::new();
     overrides.insert("metadata".to_string(), json!({"trace_id": "trace-123"}));
     request
-        .metadata
+        .provider_options
         .insert(ProviderId::from(provider_id), overrides);
 
     client.chat().create(&request).await.unwrap();

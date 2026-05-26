@@ -57,7 +57,7 @@ fn create_request_round_trip() {
 }
 
 #[test]
-fn create_request_metadata_round_trips_as_provider_body_overrides() {
+fn create_request_provider_options_round_trips_as_provider_body_overrides() {
     let mut zhipu_overrides = ChatParameterMap::new();
     zhipu_overrides.insert("model".to_string(), json!("glm-4-plus"));
     zhipu_overrides.insert("metadata".to_string(), json!({"trace_id": "trace-123"}));
@@ -67,7 +67,7 @@ fn create_request_metadata_round_trips_as_provider_body_overrides() {
             ChatCompletionRequestUserMessage::from("hi"),
         )])
         .model("gpt-4o")
-        .metadata(HashMap::from([(
+        .provider_options(HashMap::from([(
             ProviderId::from("zhipu"),
             zhipu_overrides.clone(),
         )]))
@@ -76,7 +76,7 @@ fn create_request_metadata_round_trips_as_provider_body_overrides() {
 
     let value = serde_json::to_value(&req).unwrap();
     assert_eq!(
-        value["metadata"],
+        value["provider_options"],
         json!({
             "zhipu": {
                 "metadata": {
@@ -89,7 +89,7 @@ fn create_request_metadata_round_trips_as_provider_body_overrides() {
 
     let back: CreateChatCompletionRequest = serde_json::from_value(value).unwrap();
     assert_eq!(
-        back.metadata.get(&ProviderId::from("zhipu")),
+        back.provider_options.get(&ProviderId::from("zhipu")),
         Some(&zhipu_overrides)
     );
 }

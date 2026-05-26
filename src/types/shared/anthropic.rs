@@ -29,30 +29,6 @@ pub enum AnthropicThinkingType {
     Adaptive,
 }
 
-/// Claude output effort for Anthropic adaptive output configuration.
-#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum AnthropicOutputEffort {
-    /// Low output effort.
-    Low,
-    /// Medium output effort.
-    Medium,
-    /// High output effort.
-    High,
-    /// Extra-high output effort.
-    Xhigh,
-    /// Maximum output effort.
-    Max,
-}
-
-/// Anthropic `output_config` request object.
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq, Default)]
-pub struct AnthropicOutputConfig {
-    /// Claude output effort, used by newer Anthropic models.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub effort: Option<AnthropicOutputEffort>,
-}
-
 /// Anthropic thinking content returned by Claude.
 ///
 /// These blocks are exposed separately from the assistant text so callers can

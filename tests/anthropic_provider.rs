@@ -16,9 +16,9 @@ use sigma::types::chat::{
 };
 use sigma::types::shared::{FunctionName, FunctionObject, ImageUrl, ResponseFormat};
 use sigma::{
-    ChatParamConfig, Client, ClientConfig, ModelDeploymentConfig, ModelName, ModelRef,
-    ProviderCatalog, ProviderCommonConfig, ProviderConfigMap, ProviderId, ProviderInstanceConfig,
-    ProviderKind, SecretString, SigmaError,
+    ChatParamConfig, ChatParameterMap, Client, ClientConfig, ModelDeploymentConfig, ModelName,
+    ModelRef, ProviderCatalog, ProviderCommonConfig, ProviderConfigMap, ProviderId,
+    ProviderInstanceConfig, ProviderKind, SecretString, SigmaError,
 };
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request as WiremockRequest, ResponseTemplate};
@@ -332,6 +332,122 @@ async fn anthropic_create_maps_content_part_cache_control() {
             }
         ])
     );
+}
+
+#[tokio::test]
+async fn anthropic_create_sends_native_provider_options_and_infers_beta_headers() {
+    let server = MockServer::start().await;
+    mount_anthropic_response(
+        &server,
+        anthropic_response(vec![json!({"type": "text", "text": "ok"})], "end_turn"),
+    )
+    .await;
+    let provider_id = "anthropic-primary";
+    let client = Client::build(anthropic_config(
+        provider_id,
+        Some(server.uri()),
+        Some(SecretString::from("sk-ant-test")),
+        HashMap::new(),
+        Value::Null,
+    ))
+    .unwrap();
+    let mut request = request(ModelRef::model("claude-public"));
+    let context_management = json!({
+        "edits": [{"type": "context_management_compact"}],
+    });
+    let mcp_servers = json!([{
+        "type": "url",
+        "name": "tools",
+        "url": "https://example.com/mcp",
+    }]);
+    let container = json!({"type": "auto"});
+    let output_format = json!({
+        "type": "json_schema",
+        "schema": {"type": "object", "properties": {}},
+    });
+    let output_config = json!({"effort": "low"});
+    let mut options = ChatParameterMap::new();
+    options.insert("context_management".to_string(), context_management.clone());
+    options.insert("mcp_servers".to_string(), mcp_servers.clone());
+    options.insert("container".to_string(), container.clone());
+    options.insert("output_format".to_string(), output_format.clone());
+    options.insert("output_config".to_string(), output_config.clone());
+    options.insert("speed".to_string(), json!("fast"));
+    options.insert(
+        "anthropic_beta".to_string(),
+        json!(["manual-beta-2026-01-01"]),
+    );
+    request
+        .provider_options
+        .insert(ProviderId::from(provider_id), options);
+
+    client.chat().create(&request).await.unwrap();
+
+    let request = last_request(&server).await;
+    let body: Value = request.body_json().unwrap();
+    assert_eq!(body["context_management"], context_management);
+    assert_eq!(body["mcp_servers"], mcp_servers);
+    assert_eq!(body["container"], container);
+    assert_eq!(body["output_format"], output_format);
+    assert_eq!(body["output_config"], output_config);
+    assert_eq!(body["speed"], "fast");
+    assert!(body.get("anthropic_beta").is_none());
+
+    let beta_header = request
+        .headers
+        .get("anthropic-beta")
+        .and_then(|value| value.to_str().ok())
+        .unwrap();
+    for expected in [
+        "compact-2026-01-12",
+        "context-management-2025-06-27",
+        "fast-mode-2026-02-01",
+        "manual-beta-2026-01-01",
+        "mcp-client-2025-04-04",
+        "structured-outputs-2025-11-13",
+    ] {
+        assert!(
+            beta_header.split(',').any(|value| value == expected),
+            "missing {expected} in {beta_header}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn anthropic_provider_options_output_format_overrides_portable_response_format() {
+    let server = MockServer::start().await;
+    mount_anthropic_response(
+        &server,
+        anthropic_response(vec![json!({"type": "text", "text": "ok"})], "end_turn"),
+    )
+    .await;
+    let provider_id = "anthropic-primary";
+    let client = Client::build(anthropic_config(
+        provider_id,
+        Some(server.uri()),
+        Some(SecretString::from("sk-ant-test")),
+        HashMap::new(),
+        Value::Null,
+    ))
+    .unwrap();
+    let mut request = request(ModelRef::model("claude-public"));
+    request.params.response_format = Some(ResponseFormat::JsonObject);
+    let output_format = json!({
+        "type": "json_schema",
+        "schema": {"type": "object", "additionalProperties": false},
+    });
+    let mut options = ChatParameterMap::new();
+    options.insert("output_format".to_string(), output_format.clone());
+    request
+        .provider_options
+        .insert(ProviderId::from(provider_id), options);
+
+    client.chat().create(&request).await.unwrap();
+
+    let body = last_body(&server).await;
+    assert_eq!(body["output_format"], output_format);
+    assert!(body.get("response_format").is_none());
+    assert!(body.get("tools").is_none());
 }
 
 #[tokio::test]

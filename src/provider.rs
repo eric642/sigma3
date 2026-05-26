@@ -491,8 +491,8 @@ pub struct ChatAdapterContext<'a> {
 /// Provider-neutral request data passed through the chat adapter lifecycle.
 ///
 /// The adapter receives original messages, merged parameters, and routing
-/// context. It then chooses an endpoint, applies provider-scoped body overrides
-/// while constructing a structured JSON provider request, signs it, and later
+/// context. It then chooses an endpoint, applies provider-scoped options while
+/// constructing a structured JSON provider request, signs it, and later
 /// transforms the response or stream using the same context.
 #[derive(Debug, Clone)]
 pub struct ChatAdapterRequest<'a> {
@@ -502,19 +502,21 @@ pub struct ChatAdapterRequest<'a> {
     ///
     /// Adapters convert these messages into provider-native JSON inside
     /// [`ChatCompletionAdapter::transform_request`], alongside parameter
-    /// mapping and request-body override handling.
+    /// mapping and provider option handling.
     pub messages: &'a [ChatCompletionRequestMessage],
     /// Merged and policy-filtered chat parameters.
     pub params: ChatParameterMap,
-    /// Provider-scoped final request body overrides for the selected provider.
+    /// Provider-scoped request options for the selected provider.
     ///
-    /// This is [`None`] when the request has no metadata entry for the selected
-    /// provider.
+    /// This is [`None`] when the request has no `provider_options` entry for
+    /// the selected provider.
     ///
-    /// Adapters should apply these shallow top-level fields after provider
+    /// Standard adapters apply these shallow top-level fields after provider
     /// parameter mapping and after adapter-generated fields such as `"model"`,
     /// `"messages"`, or `"stream"`, but before serializing the request body.
-    pub body_overrides: Option<&'a ChatParameterMap>,
+    /// Provider adapters may reserve option keys for headers or other
+    /// provider-specific controls.
+    pub provider_options: Option<&'a ChatParameterMap>,
 }
 
 /// Stream of OpenAI-compatible chat completion chunks returned by sigma.

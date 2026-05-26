@@ -367,12 +367,12 @@ impl Client {
         let params = adapter.map_openai_params(params)?;
         adapter.validate_environment()?;
 
-        let body_overrides = request.metadata.get(context.provider);
+        let provider_options = request.provider_options.get(context.provider);
         let adapter_request = ChatAdapterRequest {
             context: context.clone(),
             messages: &request.messages,
             params,
-            body_overrides,
+            provider_options,
         };
 
         let endpoint = adapter.endpoint(&adapter_request)?;

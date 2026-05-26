@@ -214,8 +214,8 @@ impl ChatCompletionAdapter for GeminiChatAdapter {
             request.messages,
             &request.params,
         )?;
-        if let Some(body_overrides) = request.body_overrides {
-            for (key, value) in body_overrides {
+        if let Some(provider_options) = request.provider_options {
+            for (key, value) in provider_options {
                 body.insert(key.clone(), value.clone());
             }
         }
