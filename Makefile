@@ -1,4 +1,4 @@
-.PHONY: help init dev verify openai-live ci pre-commit run release clean
+.PHONY: help init dev verify openai-live anthropic-live ci pre-commit run release clean
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -18,6 +18,9 @@ verify: ## After writing code: format, lint, test, and check rustdoc
 
 openai-live: ## Run ignored live OpenAI smoke tests (requires OPENAI_API_KEY)
 	cargo test --test openai_live -- --ignored --nocapture
+
+anthropic-live: ## Run ignored live Anthropic smoke tests (requires ANTHROPIC_API_KEY)
+	cargo test --test anthropic_live -- --ignored --nocapture
 
 pre-commit: ## Before committing: same as verify but fails on unformatted code
 	cargo fmt --all -- --check
