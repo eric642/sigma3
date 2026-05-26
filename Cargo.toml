@@ -5,11 +5,16 @@ edition = "2024"
 
 [dependencies]
 async-trait = "0.1"
+aws-credential-types = "1.2.14"
+aws-sigv4 = "1.4.3"
+aws-smithy-runtime-api = { version = "1.12.0", features = ["client"] }
 bytes = "1"
+crc32fast = "1.5"
 futures-core = "0.3"
 futures-util = "0.3"
 http = "1"
 inventory = "0.3"
+percent-encoding = "2.3"
 reqwest = { version = "0.13", default-features = false, features = ["stream", "rustls"] }
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
