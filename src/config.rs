@@ -235,7 +235,7 @@ pub struct ProviderInstanceConfig {
 
 /// Route from a public model name to a provider-native model.
 ///
-/// Deployments are the middle layer between `client.chat()` requests and a
+/// Deployments are the middle layer between [`crate::Client::create`] requests and a
 /// provider driver. They let applications expose stable model names while
 /// changing provider instances, provider-native model names, defaults, or
 /// metadata in configuration.

@@ -494,7 +494,7 @@ pub struct ChatAdapterRequest<'a> {
 /// stream after surfacing one error because the underlying HTTP body is no
 /// longer trustworthy. Adapters produce these streams from
 /// [`ChatCompletionAdapter::transform_stream`] and sigma forwards them
-/// unchanged through [`crate::Client::chat`].
+/// unchanged through [`crate::Client::create_stream`].
 pub type ChatStream = Pin<Box<dyn Stream<Item = SigmaResult<ChatStreamChunk>> + Send + 'static>>;
 
 /// Provider adapter for the generic chat HTTP pipeline.

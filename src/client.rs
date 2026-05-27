@@ -24,7 +24,11 @@ use crate::{
 /// # use sigma::{Client, ClientConfig};
 /// # fn example() -> sigma::SigmaResult<()> {
 /// let client = Client::build(ClientConfig::default())?;
-/// let _chat = client.chat();
+/// # let request = sigma::types::chat::ChatRequest::new(
+/// #     sigma::ModelRef::model("gpt-4o"),
+/// #     Vec::<sigma::types::chat::ChatMessage>::new(),
+/// # );
+/// # let _future = client.create(&request);
 /// # Ok(())
 /// # }
 /// ```
@@ -164,42 +168,19 @@ impl Client {
         Self::builder().build(config)
     }
 
-    /// Returns the chat completions API.
-    ///
-    /// Use the returned namespace to create regular or streaming chat
-    /// completions:
-    /// `client.chat().create(&request).await`.
-    pub fn chat(&self) -> ChatNamespace<'_> {
-        ChatNamespace { client: self }
-    }
-}
-
-/// Chat completions API namespace.
-///
-/// Requests are routed through [`ClientConfig`] deployments before being sent
-/// to a configured provider. Use [`ChatNamespace::create`] for a single
-/// response or [`ChatNamespace::create_stream`] for streaming responses.
-pub struct ChatNamespace<'a> {
-    client: &'a Client,
-}
-
-impl ChatNamespace<'_> {
     /// Creates one chat completion.
     ///
-    /// The call resolves [`ChatRequest::model`] through
-    /// deployment routing, runs the provider adapter lifecycle, sends the signed
-    /// request with the configured HTTP client, and transforms the provider
-    /// response back into sigma's semantic chat response type.
+    /// The call resolves [`ChatRequest::model`] through deployment routing,
+    /// runs the provider adapter lifecycle, sends the signed request with the
+    /// configured HTTP client, and transforms the provider response back into
+    /// sigma's semantic chat response type.
     ///
     /// # Errors
     ///
     /// Returns routing, unsupported parameter, provider adapter, HTTP, or
     /// provider response errors.
-    pub async fn create(
-        &self,
-        request: &ChatRequest,
-    ) -> SigmaResult<crate::types::chat::ChatResponse> {
-        self.client.create_chat_completion(request).await
+    pub async fn create(&self, request: &ChatRequest) -> SigmaResult<ChatResponse> {
+        self.create_chat_completion(request).await
     }
 
     /// Creates a streaming chat completion.
@@ -214,7 +195,7 @@ impl ChatNamespace<'_> {
     /// Returns routing, unsupported parameter, provider adapter, HTTP, or
     /// provider response errors.
     pub async fn create_stream(&self, request: &ChatRequest) -> SigmaResult<ChatStream> {
-        self.client.create_chat_completion_stream(request).await
+        self.create_chat_completion_stream(request).await
     }
 }
 

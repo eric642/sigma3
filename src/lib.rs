@@ -9,9 +9,9 @@
 //!
 //! sigma separates the user-facing client API from provider-specific driver
 //! code. Applications build a [`Client`] from a [`ClientConfig`], then call the
-//! namespaced chat API:
-//! `client.chat().create(&request).await` or
-//! `client.chat().create_stream(&request).await`.
+//! direct chat API:
+//! `client.create(&request).await` or
+//! `client.create_stream(&request).await`.
 //!
 //! ```no_run
 //! use sigma::{
@@ -53,7 +53,7 @@
 //! OpenAI-compatible HTTP endpoints (`kind = "openai-compatible"`). Simple
 //! provider crates that expose the same wire shape can register their own kind
 //! and delegate construction to [`OpenAiCompatibleProvider`]. All providers use
-//! the standard chat completions namespace and can be selected through
+//! the standard chat completion methods and can be selected through
 //! deployment routing or [`ModelRef::provider_model`].
 
 mod client;

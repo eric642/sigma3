@@ -400,10 +400,7 @@ async fn live_bedrock_create_returns_chat_completion() -> SigmaResult<()> {
         return Ok(());
     };
 
-    let response = client
-        .chat()
-        .create(&live_request(config.max_tokens))
-        .await?;
+    let response = client.create(&live_request(config.max_tokens)).await?;
 
     assert_text_response(&response);
     Ok(())
@@ -418,7 +415,6 @@ async fn live_bedrock_create_stream_yields_chunk() -> SigmaResult<()> {
 
     first_stream_chunk(
         client
-            .chat()
             .create_stream(&live_request(config.max_tokens))
             .await?,
     )
@@ -434,7 +430,6 @@ async fn live_bedrock_create_accepts_request_metadata_provider_option() -> Sigma
     };
 
     let response = client
-        .chat()
         .create(&provider_options_request(config.max_tokens))
         .await?;
 
@@ -449,10 +444,7 @@ async fn live_bedrock_create_returns_function_tool_call() -> SigmaResult<()> {
         return Ok(());
     };
 
-    let response = client
-        .chat()
-        .create(&function_tool_request(&config))
-        .await?;
+    let response = client.create(&function_tool_request(&config)).await?;
 
     assert_response_function_tool_call(&response);
     Ok(())
@@ -466,7 +458,7 @@ async fn live_bedrock_bad_model_maps_to_provider_business_error() -> SigmaResult
     };
     let request = bad_model_request(&config);
 
-    let err = match client.chat().create(&request).await {
+    let err = match client.create(&request).await {
         Ok(response) => panic!("expected bad model error, got {response:?}"),
         Err(err) => err,
     };

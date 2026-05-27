@@ -715,10 +715,7 @@ async fn live_anthropic_create_returns_chat_completion() -> SigmaResult<()> {
         return Ok(());
     };
 
-    let response = client
-        .chat()
-        .create(&live_request(config.max_tokens))
-        .await?;
+    let response = client.create(&live_request(config.max_tokens)).await?;
 
     assert_text_response(&response);
     Ok(())
@@ -733,7 +730,6 @@ async fn live_anthropic_create_stream_yields_chunk() -> SigmaResult<()> {
 
     first_stream_chunk(
         client
-            .chat()
             .create_stream(&live_request(config.max_tokens))
             .await?,
     )
@@ -750,7 +746,7 @@ async fn live_anthropic_create_stream_collects_text_and_usage() -> SigmaResult<(
     let request = full_stream_usage_request(&config);
 
     let (text, total_tokens) =
-        collect_stream_text_and_usage(client.chat().create_stream(&request).await?).await?;
+        collect_stream_text_and_usage(client.create_stream(&request).await?).await?;
 
     assert!(
         !text.trim().is_empty(),
@@ -770,10 +766,7 @@ async fn live_anthropic_create_returns_usage() -> SigmaResult<()> {
         return Ok(());
     };
 
-    let response = client
-        .chat()
-        .create(&live_request(config.max_tokens))
-        .await?;
+    let response = client.create(&live_request(config.max_tokens)).await?;
 
     assert_token_usage(&response);
     Ok(())
@@ -787,7 +780,7 @@ async fn live_anthropic_create_returns_function_tool_call() -> SigmaResult<()> {
     };
     let request = function_tool_request(&config);
 
-    let response = client.chat().create(&request).await?;
+    let response = client.create(&request).await?;
 
     assert_response_function_tool_call(&response);
     Ok(())
@@ -801,8 +794,7 @@ async fn live_anthropic_create_stream_yields_function_tool_call() -> SigmaResult
     };
     let request = stream_function_tool_request(&config);
 
-    let result =
-        collect_stream_function_tool_call(client.chat().create_stream(&request).await?).await?;
+    let result = collect_stream_function_tool_call(client.create_stream(&request).await?).await?;
 
     assert_stream_function_tool_call(&result);
     Ok(())
@@ -814,14 +806,14 @@ async fn live_anthropic_create_hits_prompt_cache_on_repeated_prompt() -> SigmaRe
     live_feature("prompt_cache", |client, _config| async move {
         let request = prompt_cache_request();
 
-        let warmup = client.chat().create(&request).await?;
+        let warmup = client.create(&request).await?;
         assert!(
             cache_creation_tokens(&warmup) > 0 || cache_read_tokens(&warmup) > 0,
             "expected first live Anthropic cache request to report cache creation or read tokens"
         );
 
         for attempt in 1..=PROMPT_CACHE_ATTEMPTS {
-            let response = client.chat().create(&request).await?;
+            let response = client.create(&request).await?;
             let cache_read = cache_read_tokens(&response);
             if cache_read > 0 {
                 return Ok(());
@@ -843,7 +835,7 @@ async fn live_anthropic_create_hits_prompt_cache_on_repeated_prompt() -> SigmaRe
 async fn live_anthropic_create_accepts_response_format_json_schema() -> SigmaResult<()> {
     live_feature("response_format_json_schema", |client, config| async move {
         let request = structured_output_request(&config);
-        let response = client.chat().create(&request).await?;
+        let response = client.create(&request).await?;
         assert_structured_output(&response);
         Ok(())
     })
@@ -857,7 +849,7 @@ async fn live_anthropic_create_accepts_provider_options_output_format() -> Sigma
         "provider_options_output_format",
         |client, config| async move {
             let request = provider_options_output_format_request(&config);
-            let response = client.chat().create(&request).await?;
+            let response = client.create(&request).await?;
             assert_structured_output(&response);
             Ok(())
         },
@@ -870,7 +862,7 @@ async fn live_anthropic_create_accepts_provider_options_output_format() -> Sigma
 async fn live_anthropic_create_accepts_reasoning_effort() -> SigmaResult<()> {
     live_feature("reasoning_effort", |client, config| async move {
         let request = reasoning_effort_request(&config);
-        let response = client.chat().create(&request).await?;
+        let response = client.create(&request).await?;
         assert_chat_response_shape(&response);
         Ok(())
     })
@@ -885,7 +877,7 @@ async fn live_anthropic_bad_model_maps_to_provider_business_error() -> SigmaResu
     };
     let request = bad_model_request(&config);
 
-    let err = match client.chat().create(&request).await {
+    let err = match client.create(&request).await {
         Ok(response) => panic!("expected bad model error, got {response:?}"),
         Err(err) => err,
     };

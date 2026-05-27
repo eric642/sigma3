@@ -718,7 +718,6 @@ async fn create_routes_public_model_to_provider_model() {
     let client = client("p-public", &server, Value::Null);
 
     let response = client
-        .chat()
         .create(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap();
@@ -733,7 +732,6 @@ async fn create_routes_deployment_id_to_provider_model() {
     let client = client("p-deployment", &server, Value::Null);
 
     let response = client
-        .chat()
         .create(&request(ModelRef::deployment("dep-chat")))
         .await
         .unwrap();
@@ -748,7 +746,6 @@ async fn create_returns_invalid_argument_when_model_empty_and_default_unset() {
     let client = client(provider_id, &server, Value::Null);
 
     let err = client
-        .chat()
         .create(&request(ModelRef::default()))
         .await
         .expect_err("empty model with no default_model should fail with InvalidArgument");
@@ -774,7 +771,6 @@ async fn create_routes_provider_model_directly() {
         .unwrap();
 
     let response = client
-        .chat()
         .create(&request(ModelRef::provider_model(
             provider_id,
             "direct-model",
@@ -792,7 +788,7 @@ async fn create_accepts_borrowed_request_without_consuming_it() {
     let client = client("p-borrowed-create", &server, Value::Null);
     let request = request(ModelRef::model("gpt-public"));
 
-    client.chat().create(&request).await.unwrap();
+    client.create(&request).await.unwrap();
 
     assert_eq!(request.model, ModelRef::model("gpt-public"));
 }
@@ -809,7 +805,7 @@ async fn create_stream_accepts_borrowed_request_without_consuming_it() {
     let client = client("p-borrowed-stream", &server, Value::Null);
     let request = request(ModelRef::model("gpt-public"));
 
-    let mut stream = client.chat().create_stream(&request).await.unwrap();
+    let mut stream = client.create_stream(&request).await.unwrap();
     let _ = stream.next().await.unwrap().unwrap();
 
     assert_eq!(request.model, ModelRef::model("gpt-public"));
@@ -823,7 +819,6 @@ async fn create_runs_adapter_lifecycle_in_order() {
     let client = client(provider_id, &server, Value::Null);
 
     client
-        .chat()
         .create(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap();
@@ -848,7 +843,6 @@ async fn create_lets_adapter_transform_non_success_status_into_business_error() 
     let client = client(provider_id, &server, Value::Null);
 
     let err = client
-        .chat()
         .create(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap_err();
@@ -886,7 +880,7 @@ async fn create_rejects_unsupported_params_when_policy_rejects() {
 
     let mut request = request(ModelRef::model("gpt-public"));
     request.params.count = Some(2);
-    let err = client.chat().create(&request).await.unwrap_err();
+    let err = client.create(&request).await.unwrap_err();
 
     assert!(matches!(
         err,
@@ -910,7 +904,7 @@ async fn create_applies_selected_provider_options_after_adapter_mapping() {
         .provider_options
         .insert(ProviderId::from(provider_id), overrides);
 
-    let response = client.chat().create(&request).await.unwrap();
+    let response = client.create(&request).await.unwrap();
 
     let body = last_body(&server).await;
     assert_eq!(response.model, "override-model");
@@ -934,7 +928,7 @@ async fn create_ignores_provider_options_for_non_selected_provider() {
         .provider_options
         .insert(ProviderId::from("other-provider"), overrides);
 
-    client.chat().create(&request).await.unwrap();
+    client.create(&request).await.unwrap();
 
     let body = last_body(&server).await;
     assert!((body["temperature"].as_f64().unwrap() - 0.2).abs() < 0.000001);
@@ -954,7 +948,7 @@ async fn create_keeps_provider_body_structured_for_provider_options() {
         .provider_options
         .insert(ProviderId::from(provider_id), overrides);
 
-    let response = client.chat().create(&request).await.unwrap();
+    let response = client.create(&request).await.unwrap();
 
     let body = last_body(&server).await;
     assert_eq!(response.model, "provider-gpt");
@@ -978,7 +972,7 @@ async fn create_lets_adapter_transform_developer_messages_in_request_body() {
         ],
     );
 
-    client.chat().create(&request).await.unwrap();
+    client.create(&request).await.unwrap();
 
     assert_eq!(last_body(&server).await["messages"][0]["role"], "system");
 }
@@ -1001,7 +995,7 @@ async fn create_stream_provider_options_can_override_injected_stream_param() {
         .provider_options
         .insert(ProviderId::from(provider_id), overrides);
 
-    let mut stream = client.chat().create_stream(&request).await.unwrap();
+    let mut stream = client.create_stream(&request).await.unwrap();
     let _ = stream.next().await.unwrap().unwrap();
 
     assert_eq!(last_body(&server).await["stream"], json!(false));
@@ -1020,7 +1014,6 @@ async fn create_stream_injects_stream_param_for_native_streams() {
     let client = client(provider_id, &server, Value::Null);
 
     let mut stream = client
-        .chat()
         .create_stream(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap();
@@ -1050,7 +1043,6 @@ async fn create_stream_uses_adapter_stream_transform_for_provider_bytes() {
     );
 
     let mut stream = client
-        .chat()
         .create_stream(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap();
@@ -1070,7 +1062,6 @@ async fn create_stream_native_lets_adapter_transform_non_success_status_into_bus
     let client = client(provider_id, &server, Value::Null);
 
     let err = match client
-        .chat()
         .create_stream(&request(ModelRef::model("gpt-public")))
         .await
     {

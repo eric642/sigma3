@@ -223,7 +223,7 @@ async fn bedrock_create_posts_converse_body_and_sigv4_headers() {
         ..Default::default()
     });
 
-    let response = client.chat().create(&request).await.unwrap();
+    let response = client.create(&request).await.unwrap();
 
     assert_eq!(response.choices[0].message.content.as_deref(), Some("ok"));
     assert_eq!(response.usage.as_ref().unwrap().prompt_tokens, 15);
@@ -315,7 +315,7 @@ async fn bedrock_create_maps_tools_provider_options_and_tool_use_response() {
         json!({"guardrailIdentifier": "guardrail-id", "guardrailVersion": "DRAFT"}),
     );
 
-    let response = client.chat().create(&request).await.unwrap();
+    let response = client.create(&request).await.unwrap();
 
     assert_eq!(
         response.choices[0].finish_reason,
@@ -378,7 +378,6 @@ async fn bedrock_create_uses_arn_region_for_sigv4_and_percent_encoded_model_path
     .unwrap();
 
     let response = client
-        .chat()
         .create(&ChatRequest::new(
             ModelRef::model("bedrock-public"),
             vec![UserMessage::from("hello").into()],
@@ -421,7 +420,7 @@ async fn bedrock_create_maps_gpt_oss_reasoning_and_json_response_format() {
         ..Default::default()
     });
 
-    let response = client.chat().create(&request).await.unwrap();
+    let response = client.create(&request).await.unwrap();
 
     assert_eq!(
         response.choices[0].message.content.as_deref(),
@@ -466,7 +465,7 @@ async fn bedrock_create_maps_nova_web_search_to_grounding_tool() {
         ..Default::default()
     });
 
-    let response = client.chat().create(&request).await.unwrap();
+    let response = client.create(&request).await.unwrap();
 
     assert_eq!(response.choices[0].message.content.as_deref(), Some("ok"));
     let body = last_body(&server).await;
@@ -500,7 +499,6 @@ async fn bedrock_create_stream_decodes_event_stream_text_tool_finish_and_usage()
     );
 
     let chunks = client
-        .chat()
         .create_stream(&request)
         .await
         .unwrap()
@@ -611,7 +609,7 @@ async fn bedrock_disambiguates_colliding_sanitized_tool_names() {
         ..Default::default()
     });
 
-    let response = client.chat().create(&request).await.unwrap();
+    let response = client.create(&request).await.unwrap();
     let tool_calls = response.choices[0].message.tool_calls.as_ref().unwrap();
     let names = tool_calls
         .iter()
@@ -659,7 +657,6 @@ async fn bedrock_rejects_parallel_tool_calls_param() {
     });
 
     let err = client
-        .chat()
         .create(&request)
         .await
         .expect_err("parallel_tool_calls is not supported by the Bedrock Converse API");
@@ -690,7 +687,6 @@ async fn bedrock_rejects_stream_options_param() {
     });
 
     let err = client
-        .chat()
         .create(&request)
         .await
         .expect_err("stream_options is not supported by the Bedrock Converse API");

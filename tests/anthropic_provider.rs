@@ -182,7 +182,7 @@ async fn anthropic_create_posts_messages_body_and_headers() {
         ..Default::default()
     });
 
-    let response = client.chat().create(&request).await.unwrap();
+    let response = client.create(&request).await.unwrap();
 
     assert_eq!(response.choices[0].message.content.as_deref(), Some("ok"));
     let request = last_request(&server).await;
@@ -275,7 +275,7 @@ async fn anthropic_create_maps_content_part_cache_control() {
         ],
     );
 
-    client.chat().create(&request).await.unwrap();
+    client.create(&request).await.unwrap();
 
     let body = last_body(&server).await;
     assert_eq!(
@@ -357,7 +357,7 @@ async fn anthropic_create_sends_native_provider_options_and_infers_beta_headers(
         .provider_options
         .insert(ProviderId::from(provider_id), options);
 
-    client.chat().create(&request).await.unwrap();
+    client.create(&request).await.unwrap();
 
     let request = last_request(&server).await;
     let body: Value = request.body_json().unwrap();
@@ -418,7 +418,7 @@ async fn anthropic_provider_options_output_format_overrides_portable_response_fo
         .provider_options
         .insert(ProviderId::from(provider_id), options);
 
-    client.chat().create(&request).await.unwrap();
+    client.create(&request).await.unwrap();
 
     let body = last_body(&server).await;
     assert_eq!(body["output_format"], output_format);
@@ -445,7 +445,7 @@ async fn anthropic_create_maps_low_reasoning_effort_to_enabled_thinking_budget()
     let mut request = request(ModelRef::model("claude-public"));
     request.params.reasoning_effort = Some(ReasoningEffort::Low);
 
-    client.chat().create(&request).await.unwrap();
+    client.create(&request).await.unwrap();
 
     let body = last_body(&server).await;
     assert_eq!(
@@ -498,7 +498,7 @@ async fn anthropic_create_maps_tools_tool_choice_and_reverses_sanitized_tool_nam
     }));
     request.params.parallel_tool_calls = Some(false);
 
-    let response = client.chat().create(&request).await.unwrap();
+    let response = client.create(&request).await.unwrap();
 
     let body = last_body(&server).await;
     assert_eq!(body["tools"][0]["name"], "weather_lookup");
@@ -552,7 +552,6 @@ async fn anthropic_create_preserves_provider_context_for_assistant_replay() {
     .unwrap();
 
     let response = client
-        .chat()
         .create(&request(ModelRef::model("claude-public")))
         .await
         .unwrap();
@@ -589,7 +588,7 @@ async fn anthropic_create_preserves_provider_context_for_assistant_replay() {
         ],
     );
 
-    client.chat().create(&follow_up).await.unwrap();
+    client.create(&follow_up).await.unwrap();
 
     let body = last_body(&server).await;
     let assistant_content = body["messages"][0]["content"].as_array().unwrap();
@@ -629,7 +628,7 @@ async fn anthropic_create_maps_response_format_reasoning_and_usage() {
     request.params.response_format = Some(ResponseFormat::JsonObject);
     request.params.reasoning_effort = Some(ReasoningEffort::Low);
 
-    let response = client.chat().create(&request).await.unwrap();
+    let response = client.create(&request).await.unwrap();
 
     let body = last_body(&server).await;
     assert_eq!(body["thinking"]["type"], "enabled");
@@ -670,7 +669,7 @@ async fn anthropic_response_format_fallback_returns_content_for_json_tool_call()
     let mut request = request(ModelRef::model("claude-public"));
     request.params.response_format = Some(ResponseFormat::JsonObject);
 
-    let response = client.chat().create(&request).await.unwrap();
+    let response = client.create(&request).await.unwrap();
 
     let content = response.choices[0]
         .message
@@ -713,7 +712,6 @@ async fn anthropic_create_maps_error_body_to_provider_business_error() {
     .unwrap();
 
     let err = client
-        .chat()
         .create(&request(ModelRef::model("claude-public")))
         .await
         .unwrap_err();
@@ -759,7 +757,6 @@ async fn anthropic_classifies_authentication_errors() {
     .unwrap();
 
     let err = client
-        .chat()
         .create(&request(ModelRef::model("claude-public")))
         .await
         .unwrap_err();
@@ -795,7 +792,6 @@ async fn anthropic_classifies_context_window_errors() {
     .unwrap();
 
     let err = client
-        .chat()
         .create(&request(ModelRef::model("claude-public")))
         .await
         .unwrap_err();
@@ -824,7 +820,6 @@ async fn anthropic_stream_overloaded_event_classifies_as_rate_limited() {
     .unwrap();
 
     let mut stream = client
-        .chat()
         .create_stream(&request(ModelRef::model("claude-public")))
         .await
         .unwrap();
@@ -878,7 +873,6 @@ async fn anthropic_create_stream_parses_text_tool_and_usage_events() {
     .unwrap();
 
     let chunks = client
-        .chat()
         .create_stream(&request(ModelRef::model("claude-public")))
         .await
         .unwrap()
@@ -943,7 +937,6 @@ async fn anthropic_stream_response_format_fallback_emits_content_for_json_tool_c
     request.params.response_format = Some(ResponseFormat::JsonObject);
 
     let chunks = client
-        .chat()
         .create_stream(&request)
         .await
         .unwrap()

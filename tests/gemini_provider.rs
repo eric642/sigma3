@@ -136,7 +136,7 @@ async fn gemini_create_uses_v1alpha_for_gemini_3_models() {
     ))
     .unwrap();
 
-    let response = client.chat().create(&basic_request()).await.unwrap();
+    let response = client.create(&basic_request()).await.unwrap();
 
     assert_eq!(response.choices[0].message.content.as_deref(), Some("ok"));
 }
@@ -191,7 +191,7 @@ async fn gemini_create_posts_generate_content_body_and_headers() {
         ],
     );
 
-    let response = client.chat().create(&request).await.unwrap();
+    let response = client.create(&request).await.unwrap();
 
     assert_eq!(response.choices[0].message.content.as_deref(), Some("ok"));
     let request = last_request(&server).await;
@@ -276,7 +276,7 @@ async fn gemini_create_maps_openai_params_tools_and_response_format() {
         },
     }));
 
-    client.chat().create(&request).await.unwrap();
+    client.create(&request).await.unwrap();
 
     let body = last_body(&server).await;
     assert_eq!(body["generationConfig"]["temperature"], 0.2);
@@ -339,7 +339,7 @@ async fn gemini_create_transforms_function_calls_and_usage() {
     .await;
     let client = Client::build(gemini_config(server.uri())).unwrap();
 
-    let response = client.chat().create(&basic_request()).await.unwrap();
+    let response = client.create(&basic_request()).await.unwrap();
 
     assert_eq!(response.id, "gemini-tool");
     assert_eq!(
@@ -405,7 +405,6 @@ async fn gemini_create_stream_parses_sse_tool_calls_and_usage() {
     let client = Client::build(gemini_config(server.uri())).unwrap();
 
     let chunks = client
-        .chat()
         .create_stream(&basic_request())
         .await
         .unwrap()
@@ -454,7 +453,7 @@ async fn gemini_create_maps_error_body_to_provider_business_error() {
         .await;
     let client = Client::build(gemini_config(server.uri())).unwrap();
 
-    let err = client.chat().create(&basic_request()).await.unwrap_err();
+    let err = client.create(&basic_request()).await.unwrap_err();
 
     assert!(matches!(
         err,
@@ -484,7 +483,6 @@ async fn gemini_rejects_tool_choice_function_without_name() {
     });
 
     let err = client
-        .chat()
         .create(&request)
         .await
         .expect_err("tool_choice type=function with empty name should fail");
@@ -510,7 +508,6 @@ async fn gemini_rejects_parallel_tool_calls_param() {
     });
 
     let err = client
-        .chat()
         .create(&request)
         .await
         .expect_err("parallel_tool_calls is not exposed by Gemini's generateContent API");

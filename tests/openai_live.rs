@@ -743,7 +743,6 @@ async fn live_openai_create_returns_chat_completion() -> SigmaResult<()> {
     let client = Client::build(live_client_config(&config))?;
 
     let response = client
-        .chat()
         .create(&live_request(config.max_completion_tokens)?)
         .await?;
 
@@ -766,7 +765,6 @@ async fn live_openai_create_stream_yields_chunk() -> SigmaResult<()> {
     let client = Client::build(live_client_config(&config))?;
 
     let mut stream = client
-        .chat()
         .create_stream(&live_request(config.max_completion_tokens)?)
         .await?;
     let Some(chunk) = stream.next().await else {
@@ -784,7 +782,7 @@ async fn live_openai_create_accepts_content_part_array() -> SigmaResult<()> {
     };
     let request = content_part_request("Hello from a text content part.", &config)?;
 
-    let response = client.chat().create(&request).await?;
+    let response = client.create(&request).await?;
 
     assert_chat_response_shape(&response);
     Ok(())
@@ -798,7 +796,7 @@ async fn live_openai_create_accepts_user_message_name() -> SigmaResult<()> {
     };
     let request = named_user_request("test_user", &config)?;
 
-    let response = client.chat().create(&request).await?;
+    let response = client.create(&request).await?;
 
     assert_chat_response_shape(&response);
     Ok(())
@@ -812,7 +810,7 @@ async fn live_openai_create_accepts_developer_message() -> SigmaResult<()> {
     };
     let request = developer_request(&config)?;
 
-    let response = client.chat().create(&request).await?;
+    let response = client.create(&request).await?;
 
     assert_chat_response_shape(&response);
     Ok(())
@@ -826,7 +824,7 @@ async fn live_openai_create_stream_with_include_usage_yields_chunk() -> SigmaRes
     };
     let request = stream_options_request(&config)?;
 
-    first_stream_chunk(client.chat().create_stream(&request).await?).await?;
+    first_stream_chunk(client.create_stream(&request).await?).await?;
     Ok(())
 }
 
@@ -839,7 +837,7 @@ async fn live_openai_create_stream_collects_text_and_usage() -> SigmaResult<()> 
     let request = full_stream_usage_request(&config)?;
 
     let (text, total_tokens) =
-        collect_stream_text_and_usage(client.chat().create_stream(&request).await?).await?;
+        collect_stream_text_and_usage(client.create_stream(&request).await?).await?;
 
     assert!(
         !text.trim().is_empty(),
@@ -860,7 +858,7 @@ async fn live_openai_create_returns_usage() -> SigmaResult<()> {
     };
     let request = live_request(config.max_completion_tokens)?;
 
-    let response = client.chat().create(&request).await?;
+    let response = client.create(&request).await?;
 
     assert_token_usage(&response);
     Ok(())
@@ -871,7 +869,7 @@ async fn live_openai_create_returns_usage() -> SigmaResult<()> {
 async fn live_openai_create_accepts_logprobs() -> SigmaResult<()> {
     live_feature("logprobs", |client, config| async move {
         let request = token_logprobs_request(&config)?;
-        let response = client.chat().create(&request).await?;
+        let response = client.create(&request).await?;
         assert_token_usage(&response);
         assert_logprobs(&response);
         Ok(())
@@ -887,11 +885,11 @@ async fn live_openai_create_hits_prompt_cache_on_repeated_prompt() -> SigmaResul
     };
     let request = prompt_cache_request()?;
 
-    let warmup = client.chat().create(&request).await?;
+    let warmup = client.create(&request).await?;
     assert_token_usage(&warmup);
 
     for attempt in 1..=PROMPT_CACHE_ATTEMPTS {
-        let response = client.chat().create(&request).await?;
+        let response = client.create(&request).await?;
         let cached_tokens = cached_tokens(&response);
         if cached_tokens > 0 {
             return Ok(());
@@ -914,11 +912,11 @@ async fn live_openai_create_hits_prompt_cache_with_tool() -> SigmaResult<()> {
     };
     let request = tool_prompt_cache_request()?;
 
-    let warmup = client.chat().create(&request).await?;
+    let warmup = client.create(&request).await?;
     assert_response_function_tool_call(&warmup);
 
     for attempt in 1..=PROMPT_CACHE_ATTEMPTS {
-        let response = client.chat().create(&request).await?;
+        let response = client.create(&request).await?;
         assert_response_function_tool_call(&response);
 
         let cached_tokens = cached_tokens(&response);
@@ -940,7 +938,7 @@ async fn live_openai_create_hits_prompt_cache_with_tool() -> SigmaResult<()> {
 async fn live_openai_create_accepts_response_format_json_object() -> SigmaResult<()> {
     live_feature("response_format_json_object", |client, config| async move {
         let request = json_object_request(&config)?;
-        let response = client.chat().create(&request).await?;
+        let response = client.create(&request).await?;
         assert_chat_response_shape(&response);
         Ok(())
     })
@@ -955,7 +953,7 @@ async fn live_openai_create_accepts_function_tool() -> SigmaResult<()> {
     };
     let request = function_tool_request(&config)?;
 
-    let response = client.chat().create(&request).await?;
+    let response = client.create(&request).await?;
 
     assert_response_function_tool_call(&response);
     Ok(())
@@ -969,8 +967,7 @@ async fn live_openai_create_stream_yields_function_tool_call() -> SigmaResult<()
     };
     let request = stream_function_tool_request(&config)?;
 
-    let result =
-        collect_stream_function_tool_call(client.chat().create_stream(&request).await?).await?;
+    let result = collect_stream_function_tool_call(client.create_stream(&request).await?).await?;
 
     assert_stream_function_tool_call(&result);
     Ok(())
@@ -981,7 +978,7 @@ async fn live_openai_create_stream_yields_function_tool_call() -> SigmaResult<()
 async fn live_openai_create_accepts_safety_identifier() -> SigmaResult<()> {
     live_feature("safety_identifier", |client, config| async move {
         let request = safety_identifier_request(&config)?;
-        let response = client.chat().create(&request).await?;
+        let response = client.create(&request).await?;
         assert_chat_response_shape(&response);
         Ok(())
     })
@@ -993,7 +990,7 @@ async fn live_openai_create_accepts_safety_identifier() -> SigmaResult<()> {
 async fn live_openai_create_accepts_prediction() -> SigmaResult<()> {
     live_feature("prediction", |client, config| async move {
         let request = prediction_request(&config)?;
-        let response = client.chat().create(&request).await?;
+        let response = client.create(&request).await?;
         assert_chat_response_shape(&response);
         Ok(())
     })
@@ -1005,7 +1002,7 @@ async fn live_openai_create_accepts_prediction() -> SigmaResult<()> {
 async fn live_openai_create_accepts_service_tier() -> SigmaResult<()> {
     live_feature("service_tier", |client, config| async move {
         let request = service_tier_request(&config)?;
-        let response = client.chat().create(&request).await?;
+        let response = client.create(&request).await?;
         assert_chat_response_shape(&response);
         Ok(())
     })
@@ -1017,7 +1014,7 @@ async fn live_openai_create_accepts_service_tier() -> SigmaResult<()> {
 async fn live_openai_stream_accepts_n_greater_than_one() -> SigmaResult<()> {
     live_feature("stream_n_greater_than_one", |client, config| async move {
         let request = stream_n_request(&config)?;
-        first_stream_chunk(client.chat().create_stream(&request).await?).await?;
+        first_stream_chunk(client.create_stream(&request).await?).await?;
         Ok(())
     })
     .await
@@ -1031,7 +1028,7 @@ async fn live_openai_bad_model_maps_to_provider_business_error() -> SigmaResult<
     };
     let request = bad_model_request(&config)?;
 
-    let err = match client.chat().create(&request).await {
+    let err = match client.create(&request).await {
         Ok(response) => panic!("expected bad model error, got {response:?}"),
         Err(err) => err,
     };

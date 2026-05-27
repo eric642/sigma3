@@ -248,7 +248,6 @@ async fn openai_create_posts_openai_chat_completion_body() {
     .unwrap();
 
     let response = client
-        .chat()
         .create(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap();
@@ -296,7 +295,7 @@ async fn openai_create_preserves_developer_role_for_openai() {
         ],
     );
 
-    client.chat().create(&request).await.unwrap();
+    client.create(&request).await.unwrap();
 
     assert_eq!(last_body(&server).await["messages"][0]["role"], "developer");
 }
@@ -359,7 +358,7 @@ async fn openai_create_sends_multimodal_user_content_parts() {
         ],
     );
 
-    client.chat().create(&request).await.unwrap();
+    client.create(&request).await.unwrap();
 
     assert_eq!(
         last_body(&server).await["messages"][0]["content"],
@@ -395,7 +394,7 @@ async fn openai_create_passes_prediction_content() {
         "expected output".to_string(),
     )));
 
-    client.chat().create(&request).await.unwrap();
+    client.create(&request).await.unwrap();
 
     assert_eq!(
         last_body(&server).await["prediction"],
@@ -424,7 +423,7 @@ async fn openai_create_passes_safety_identifier() {
     let mut request = request(ModelRef::model("gpt-public"));
     request.params.safety_identifier = Some("user_123".to_string());
 
-    client.chat().create(&request).await.unwrap();
+    client.create(&request).await.unwrap();
 
     assert_eq!(last_body(&server).await["safety_identifier"], "user_123");
 }
@@ -450,7 +449,7 @@ async fn openai_create_passes_service_tier() {
     let mut request = request(ModelRef::model("gpt-public"));
     request.params.service_tier = Some(ServiceTier::Priority);
 
-    client.chat().create(&request).await.unwrap();
+    client.create(&request).await.unwrap();
 
     assert_eq!(last_body(&server).await["service_tier"], "priority");
 }
@@ -485,7 +484,7 @@ async fn openai_create_maps_portable_params_to_openai_body_fields() {
         user_location: None,
     });
 
-    client.chat().create(&request).await.unwrap();
+    client.create(&request).await.unwrap();
 
     let body = last_body(&server).await;
     assert_eq!(body["audio"], json!({"voice": "alloy", "format": "mp3"}));
@@ -536,7 +535,7 @@ async fn openai_create_passes_response_format_json_schema() {
         },
     });
 
-    client.chat().create(&request).await.unwrap();
+    client.create(&request).await.unwrap();
 
     assert_eq!(
         last_body(&server).await["response_format"],
@@ -599,7 +598,7 @@ async fn openai_create_passes_tools_tool_choice_and_parallel_tool_calls() {
     }));
     request.params.parallel_tool_calls = Some(true);
 
-    client.chat().create(&request).await.unwrap();
+    client.create(&request).await.unwrap();
 
     assert_eq!(
         last_body(&server).await["tools"][0]["function"]["name"],
@@ -631,7 +630,6 @@ async fn openai_create_sends_configured_openai_organization_header() {
     .unwrap();
 
     client
-        .chat()
         .create(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap();
@@ -675,7 +673,6 @@ async fn openai_create_rejects_sdk_transport_controls_as_chat_params() {
     let client = Client::build(config).unwrap();
 
     let err = client
-        .chat()
         .create(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap_err();
@@ -713,7 +710,6 @@ async fn openai_create_adds_bearer_auth_and_json_content_type() {
     .unwrap();
 
     client
-        .chat()
         .create(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap();
@@ -759,7 +755,6 @@ async fn openai_create_preserves_configured_authorization_header() {
     .unwrap();
 
     client
-        .chat()
         .create(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap();
@@ -794,7 +789,6 @@ async fn compatible_create_allows_missing_api_key_and_appends_chat_completions()
     .unwrap();
 
     client
-        .chat()
         .create(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap();
@@ -828,7 +822,6 @@ async fn compatible_create_does_not_append_chat_completions_twice() {
     .unwrap();
 
     client
-        .chat()
         .create(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap();
@@ -862,7 +855,7 @@ async fn compatible_create_sends_provider_metadata_from_provider_options() {
         .provider_options
         .insert(ProviderId::from(provider_id), overrides);
 
-    client.chat().create(&request).await.unwrap();
+    client.create(&request).await.unwrap();
 
     assert_eq!(
         last_body(&server).await["metadata"],
@@ -891,7 +884,7 @@ async fn compatible_create_preserves_max_completion_tokens_by_default() {
     let mut request = request(ModelRef::model("gpt-public"));
     request.params.max_completion_tokens = Some(42);
 
-    client.chat().create(&request).await.unwrap();
+    client.create(&request).await.unwrap();
 
     let body = last_body(&server).await;
     assert_eq!(body["max_completion_tokens"], 42);
@@ -927,7 +920,7 @@ async fn compatible_create_maps_max_completion_tokens_when_chat_params_rename_co
     let mut request = request(ModelRef::model("gpt-public"));
     request.params.max_completion_tokens = Some(42);
 
-    client.chat().create(&request).await.unwrap();
+    client.create(&request).await.unwrap();
 
     let body = last_body(&server).await;
     assert_eq!(body["max_tokens"], 42);
@@ -961,7 +954,7 @@ async fn delegated_compatible_provider_uses_openai_compatible_base_driver() {
     let mut request = request(ModelRef::model("gpt-public"));
     request.params.max_completion_tokens = Some(17);
 
-    client.chat().create(&request).await.unwrap();
+    client.create(&request).await.unwrap();
 
     let sent = last_request(&server).await;
     let body: Value = sent.body_json().unwrap();
@@ -1039,7 +1032,6 @@ async fn compatible_create_sanitizes_null_usage_token_counts() {
     .unwrap();
 
     let response = client
-        .chat()
         .create(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap();
@@ -1075,7 +1067,6 @@ async fn create_maps_openai_error_body_to_provider_business_error() {
     .unwrap();
 
     let err = client
-        .chat()
         .create(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap_err();
@@ -1136,7 +1127,6 @@ async fn create_stream_parses_openai_sse_frames_and_done_marker() {
     .unwrap();
 
     let chunks = client
-        .chat()
         .create_stream(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap()
@@ -1205,7 +1195,6 @@ async fn openai_create_parses_annotations_and_prediction_usage_details() {
     .unwrap();
 
     let response = client
-        .chat()
         .create(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap();
@@ -1266,7 +1255,6 @@ async fn openai_create_maps_reasoning_content_to_reasoning_blocks() {
     .unwrap();
 
     let response = client
-        .chat()
         .create(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap();
@@ -1324,7 +1312,6 @@ async fn openai_create_stream_preserves_usage_chunk_when_include_usage_true() {
     });
 
     let chunks = client
-        .chat()
         .create_stream(&request)
         .await
         .unwrap()
@@ -1373,7 +1360,6 @@ async fn openai_create_stream_maps_reasoning_content_to_reasoning_blocks() {
     .unwrap();
 
     let chunks = client
-        .chat()
         .create_stream(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap()
@@ -1414,7 +1400,6 @@ async fn openai_create_stream_preserves_choice_indices_for_n_greater_than_one() 
     request.params.count = Some(2);
 
     let chunks = client
-        .chat()
         .create_stream(&request)
         .await
         .unwrap()
@@ -1468,7 +1453,6 @@ async fn openai_create_stream_preserves_tool_call_chunks() {
     .unwrap();
 
     let chunks = client
-        .chat()
         .create_stream(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap()
@@ -1509,7 +1493,6 @@ async fn openai_create_stream_accepts_crlf_comments_and_raw_json_lines() {
     .unwrap();
 
     let chunks = client
-        .chat()
         .create_stream(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap()
@@ -1540,7 +1523,6 @@ async fn openai_create_stream_surfaces_invalid_json_as_provider_response_error()
     ))
     .unwrap();
     let mut stream = client
-        .chat()
         .create_stream(&request(ModelRef::model("gpt-public")))
         .await
         .unwrap();
@@ -1581,7 +1563,6 @@ async fn openai_create_stream_maps_error_status_to_provider_business_error() {
     .unwrap();
 
     let err = match client
-        .chat()
         .create_stream(&request(ModelRef::model("gpt-public")))
         .await
     {
