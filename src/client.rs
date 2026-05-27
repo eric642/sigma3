@@ -356,8 +356,7 @@ impl Client {
                 .as_ref()
                 .map(|deployment| &deployment.defaults),
             chat_param_config: self.inner.provider_chat_params.get(context.provider),
-            streaming: stream_behavior
-                .is_some_and(|behavior| behavior.mode == StreamMode::Native),
+            streaming: stream_behavior.is_some_and(|behavior| behavior.mode == StreamMode::Native),
         };
 
         let endpoint = adapter.endpoint(&adapter_request)?;

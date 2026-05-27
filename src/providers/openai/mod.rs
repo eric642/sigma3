@@ -3,7 +3,7 @@ use std::sync::Arc;
 use http::header::{AUTHORIZATION, CONTENT_TYPE};
 use http::{HeaderMap, HeaderValue, Method};
 
-use crate::config::{ChatParameterMap, SecretString};
+use crate::config::SecretString;
 use crate::provider_http::{
     ProviderByteStream, ProviderEndpoint, ProviderRequest, ProviderResponse, SignedProviderRequest,
 };
@@ -27,7 +27,7 @@ use config::{
     OpenAiCompatibleConfig, OpenAiConfig, OpenAiFlavor, resolve_api_base, resolve_api_key,
 };
 use error::openai_error_response;
-use request::{chat_completions_url, rename_param};
+use request::chat_completions_url;
 use response::{map_response_reasoning_content, sanitize_null_usage_tokens};
 use stream::OpenAiSseStream;
 
@@ -149,13 +149,6 @@ impl OpenAiChatBodyBuilder for OpenAiChatAdapter {
 
     fn default_supported_chat_params(&self) -> &'static [&'static str] {
         SUPPORTED_CHAT_PARAMS
-    }
-
-    fn post_process_params(&self, params: &mut ChatParameterMap) {
-        rename_param(params, "audio_output", "audio");
-        rename_param(params, "count", "n");
-        rename_param(params, "output_modalities", "modalities");
-        rename_param(params, "web_search", "web_search_options");
     }
 }
 

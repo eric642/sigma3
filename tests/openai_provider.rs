@@ -4,10 +4,12 @@ use futures_util::StreamExt;
 use http::StatusCode;
 use serde_json::{Value, json};
 use sigma::types::chat::{
-    Annotation, AudioPart, CacheControl, ChatRequest, ChatRequestParams, DeveloperMessage,
-    FileInput, FilePart, FunctionTool, ImagePart, InputAudio, InputAudioFormat,
-    NamedFunctionToolChoice, PredictionContent, PredictionContentValue, ServiceTier, StreamOptions,
-    TextContent, TextPart, ToolChoice, ToolDefinition, UserContent, UserContentPart, UserMessage,
+    Annotation, AudioOutput, AudioOutputFormat, AudioPart, AudioVoice, CacheControl, ChatRequest,
+    ChatRequestParams, DeveloperMessage, FileInput, FilePart, FunctionTool, ImagePart, InputAudio,
+    InputAudioFormat, NamedFunctionToolChoice, OutputModality, PredictionContent,
+    PredictionContentValue, ServiceTier, StreamOptions, TextContent, TextPart, ToolChoice,
+    ToolDefinition, UserContent, UserContentPart, UserMessage, WebSearchContextSize,
+    WebSearchOptions,
 };
 use sigma::types::shared::{
     FunctionName, FunctionObject, ImageUrl, ResponseFormat, ResponseFormatJsonSchema,
@@ -420,6 +422,52 @@ async fn openai_create_passes_service_tier() {
     client.chat().create(&request).await.unwrap();
 
     assert_eq!(last_body(&server).await["service_tier"], "priority");
+}
+
+#[tokio::test]
+async fn openai_create_maps_portable_params_to_openai_body_fields() {
+    let server = MockServer::start().await;
+    mount_json_response(
+        &server,
+        "/v1/chat/completions",
+        response_body("gpt-4o-mini", "ok"),
+    )
+    .await;
+    let client = Client::build(openai_config(
+        "openai",
+        "openai-standard-fields",
+        Some(format!("{}/v1", server.uri())),
+        Some(SecretString::from("sk-test")),
+        HashMap::new(),
+        Value::Null,
+    ))
+    .unwrap();
+    let mut request = request(ModelRef::model("gpt-public"));
+    request.params.audio_output = Some(AudioOutput {
+        voice: AudioVoice::Alloy,
+        format: AudioOutputFormat::Mp3,
+    });
+    request.params.count = Some(2);
+    request.params.output_modalities = Some(vec![OutputModality::Text, OutputModality::Audio]);
+    request.params.web_search = Some(WebSearchOptions {
+        search_context_size: Some(WebSearchContextSize::Low),
+        user_location: None,
+    });
+
+    client.chat().create(&request).await.unwrap();
+
+    let body = last_body(&server).await;
+    assert_eq!(body["audio"], json!({"voice": "alloy", "format": "mp3"}));
+    assert!(body.get("audio_output").is_none());
+    assert_eq!(body["n"], 2);
+    assert!(body.get("count").is_none());
+    assert_eq!(body["modalities"], json!(["text", "audio"]));
+    assert!(body.get("output_modalities").is_none());
+    assert_eq!(
+        body["web_search_options"],
+        json!({"search_context_size": "low"})
+    );
+    assert!(body.get("web_search").is_none());
 }
 
 #[tokio::test]

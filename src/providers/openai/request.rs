@@ -26,12 +26,6 @@ fn contains_provider_option(provider_options: Option<&ChatParameterMap>, key: &s
     provider_options.is_some_and(|provider_options| provider_options.contains_key(key))
 }
 
-pub(super) fn rename_param(params: &mut ChatParameterMap, from: &str, to: &str) {
-    if let Some(value) = params.remove(from) {
-        params.insert(to.to_string(), value);
-    }
-}
-
 pub(super) fn openai_chat_body(
     provider: &ProviderId,
     provider_model: &ModelName,
