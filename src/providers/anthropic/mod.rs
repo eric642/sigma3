@@ -4,9 +4,12 @@ use http::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use http::{HeaderMap, HeaderName, Method};
 use serde_json::{Map, Value};
 
-use crate::config::{ChatParameterMap, SecretString};
+use crate::config::SecretString;
 use crate::provider_http::{
     ProviderByteStream, ProviderEndpoint, ProviderRequest, ProviderResponse, SignedProviderRequest,
+};
+use crate::providers::chat_params::{
+    apply_chat_param_rules, merge_chat_params, resolve_chat_param_rules,
 };
 use crate::providers::common::{
     header_map_from_config, non_empty_env, parse_response_json, reject_custom_tool_calls,
@@ -153,14 +156,6 @@ struct AnthropicChatAdapter {
 }
 
 impl ChatCompletionAdapter for AnthropicChatAdapter {
-    fn supported_chat_params(&self) -> Vec<&'static str> {
-        SUPPORTED_CHAT_PARAMS.to_vec()
-    }
-
-    fn map_chat_params(&self, params: ChatParameterMap) -> SigmaResult<ChatParameterMap> {
-        Ok(params)
-    }
-
     fn endpoint(&self, _request: &ChatAdapterRequest<'_>) -> SigmaResult<ProviderEndpoint> {
         Ok(ProviderEndpoint {
             method: Method::POST,
@@ -173,10 +168,19 @@ impl ChatCompletionAdapter for AnthropicChatAdapter {
         request: ChatAdapterRequest<'_>,
         endpoint: ProviderEndpoint,
     ) -> SigmaResult<ProviderRequest> {
-        reject_custom_tool_calls(&self.provider, request.messages)?;
-        let mut params = request.params;
+        reject_custom_tool_calls(&self.provider, &request.request.messages)?;
+        let provider_options = request.request.provider_options.get(&self.provider);
+        let inject_stream = request.streaming && self.stream_behavior().inject_stream;
+        let mut params =
+            merge_chat_params(request.deployment_defaults, request.request, inject_stream)?;
+        let rules = resolve_chat_param_rules(
+            SUPPORTED_CHAT_PARAMS,
+            request.chat_param_config,
+            request.context.provider_model,
+        );
+        apply_chat_param_rules(&self.provider, &mut params, &rules)?;
 
-        let mut beta_values = self.collect_beta_values(&mut params, request.provider_options);
+        let mut beta_values = self.collect_beta_values(&mut params, provider_options);
         let tool_maps = prepare_tools(&mut params)?;
         if tool_maps.has_rewrites() {
             apply_tool_choice_name_map(&mut params, &tool_maps.forward);
@@ -186,7 +190,7 @@ impl ChatCompletionAdapter for AnthropicChatAdapter {
         map_stop_sequences(&mut params);
         map_reasoning_effort(&mut params, request.context.provider_model)?;
         map_user_metadata(&mut params);
-        if provider_options_contain(request.provider_options, "output_format") {
+        if provider_options_contain(provider_options, "output_format") {
             params.remove("response_format");
         } else {
             map_response_format(&mut params, request.context.provider_model)?;
@@ -194,12 +198,15 @@ impl ChatCompletionAdapter for AnthropicChatAdapter {
         map_tool_choice(&mut params);
         map_web_search_tool(&mut params);
         infer_beta_headers(&params, &mut beta_values);
-        if let Some(provider_options) = request.provider_options {
+        if let Some(provider_options) = provider_options {
             infer_beta_headers(provider_options, &mut beta_values);
         }
 
-        let translated =
-            translate_anthropic_messages(&self.provider, request.messages, &tool_maps.forward)?;
+        let translated = translate_anthropic_messages(
+            &self.provider,
+            &request.request.messages,
+            &tool_maps.forward,
+        )?;
         let mut body = Map::new();
         body.insert(
             "model".to_string(),
@@ -216,7 +223,7 @@ impl ChatCompletionAdapter for AnthropicChatAdapter {
                 body.insert(key, value);
             }
         }
-        if let Some(provider_options) = request.provider_options {
+        if let Some(provider_options) = provider_options {
             for (key, value) in provider_options {
                 if !is_internal_param(key) {
                     body.insert(key.clone(), value.clone());

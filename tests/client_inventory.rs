@@ -19,7 +19,8 @@ use sigma::{
     ProviderCommonConfig, ProviderConfigMap, ProviderDriver, ProviderEndpoint, ProviderId,
     ProviderInit, ProviderInstanceConfig, ProviderKind, ProviderKindStatic, ProviderRequest,
     ProviderResponse, SecretString, SigmaError, SigmaResult, SignedProviderRequest, StreamBehavior,
-    provider_registration, submit_provider,
+    apply_chat_param_rules, merge_chat_params, provider_registration, resolve_chat_param_rules,
+    submit_provider,
 };
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request as WiremockRequest, ResponseTemplate};
@@ -217,17 +218,9 @@ fn fake_messages_to_value(provider: &ProviderId, messages: &[ChatMessage]) -> Si
     Ok(Value::Array(translated))
 }
 
+const FAKE_SUPPORTED_CHAT_PARAMS: &[&str] = &["temperature", "stream", "max_completion_tokens"];
+
 impl ChatCompletionAdapter for FakeChatAdapter {
-    fn supported_chat_params(&self) -> Vec<&'static str> {
-        push_event(&self.id, "supported_chat_params");
-        vec!["temperature", "stream", "max_completion_tokens"]
-    }
-
-    fn map_chat_params(&self, params: ChatParameterMap) -> SigmaResult<ChatParameterMap> {
-        push_event(&self.id, "map_chat_params");
-        Ok(params)
-    }
-
     fn endpoint(&self, _request: &ChatAdapterRequest<'_>) -> SigmaResult<ProviderEndpoint> {
         push_event(&self.id, "endpoint");
         Ok(ProviderEndpoint {
@@ -242,12 +235,23 @@ impl ChatCompletionAdapter for FakeChatAdapter {
         endpoint: ProviderEndpoint,
     ) -> SigmaResult<ProviderRequest> {
         push_event(&self.id, "transform_request");
+        let inject_stream = request.streaming && self.stream_behavior().inject_stream;
+        let mut params =
+            merge_chat_params(request.deployment_defaults, request.request, inject_stream)?;
+        let rules = resolve_chat_param_rules(
+            FAKE_SUPPORTED_CHAT_PARAMS,
+            request.chat_param_config,
+            request.context.provider_model,
+        );
+        apply_chat_param_rules(&self.id, &mut params, &rules)?;
+
+        let provider_options = request.request.provider_options.get(&self.id);
         let body = fake_chat_body_value(
             &self.id,
-            &request.params,
+            &params,
             request.context.provider_model,
-            request.messages,
-            request.provider_options,
+            &request.request.messages,
+            provider_options,
         )?;
 
         Ok(ProviderRequest {
@@ -934,8 +938,6 @@ async fn create_runs_adapter_lifecycle_in_order() {
     assert_eq!(
         take_events(provider_id),
         vec![
-            "supported_chat_params",
-            "map_chat_params",
             "endpoint",
             "transform_request",
             "sign_request",
@@ -980,8 +982,6 @@ async fn create_lets_adapter_transform_non_success_status_into_business_error() 
     assert_eq!(
         take_events(provider_id),
         vec![
-            "supported_chat_params",
-            "map_chat_params",
             "endpoint",
             "transform_request",
             "sign_request",
@@ -1373,8 +1373,6 @@ async fn create_stream_injects_stream_param_for_native_streams() {
     assert_eq!(
         take_events(provider_id),
         vec![
-            "supported_chat_params",
-            "map_chat_params",
             "endpoint",
             "transform_request",
             "sign_request",
@@ -1408,8 +1406,6 @@ async fn create_stream_can_fake_stream_from_non_stream_response() {
     assert_eq!(
         take_events(provider_id),
         vec![
-            "supported_chat_params",
-            "map_chat_params",
             "endpoint",
             "transform_request",
             "sign_request",
@@ -1457,8 +1453,6 @@ async fn create_stream_fake_lets_adapter_transform_non_success_status_into_busin
     assert_eq!(
         take_events(provider_id),
         vec![
-            "supported_chat_params",
-            "map_chat_params",
             "endpoint",
             "transform_request",
             "sign_request",
@@ -1530,8 +1524,6 @@ async fn create_stream_native_lets_adapter_transform_non_success_status_into_bus
     assert_eq!(
         take_events(provider_id),
         vec![
-            "supported_chat_params",
-            "map_chat_params",
             "endpoint",
             "transform_request",
             "sign_request",

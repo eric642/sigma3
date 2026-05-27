@@ -11,9 +11,11 @@ use http::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use http::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::Value;
 
-use crate::config::ChatParameterMap;
 use crate::provider_http::{
     ProviderByteStream, ProviderEndpoint, ProviderRequest, ProviderResponse, SignedProviderRequest,
+};
+use crate::providers::chat_params::{
+    apply_chat_param_rules, merge_chat_params, resolve_chat_param_rules,
 };
 use crate::providers::common::{
     header_map_from_config, parse_response_json, reject_custom_tool_calls,
@@ -121,20 +123,8 @@ struct BedrockChatAdapter {
 }
 
 impl ChatCompletionAdapter for BedrockChatAdapter {
-    fn supported_chat_params(&self) -> Vec<&'static str> {
-        SUPPORTED_CHAT_PARAMS.to_vec()
-    }
-
-    fn map_chat_params(&self, params: ChatParameterMap) -> SigmaResult<ChatParameterMap> {
-        Ok(params)
-    }
-
     fn endpoint(&self, request: &ChatAdapterRequest<'_>) -> SigmaResult<ProviderEndpoint> {
-        let stream = request
-            .params
-            .get("stream")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
+        let stream = request.streaming;
         let region = self.region_for_model(request.context.provider_model);
         let api_base = self.api_base_for_region(&region);
         Ok(endpoint(&api_base, request.context.provider_model, stream))
@@ -145,15 +135,25 @@ impl ChatCompletionAdapter for BedrockChatAdapter {
         request: ChatAdapterRequest<'_>,
         endpoint: ProviderEndpoint,
     ) -> SigmaResult<ProviderRequest> {
-        reject_custom_tool_calls(&self.provider, request.messages)?;
+        reject_custom_tool_calls(&self.provider, &request.request.messages)?;
         let region = self.region_for_model(request.context.provider_model);
+        let inject_stream = request.streaming && self.stream_behavior().inject_stream;
+        let mut params =
+            merge_chat_params(request.deployment_defaults, request.request, inject_stream)?;
+        let rules = resolve_chat_param_rules(
+            SUPPORTED_CHAT_PARAMS,
+            request.chat_param_config,
+            request.context.provider_model,
+        );
+        apply_chat_param_rules(&self.provider, &mut params, &rules)?;
+
         let mut translated = bedrock_request_body(
             &self.provider,
             request.context.clone(),
-            request.messages,
-            &request.params,
+            &request.request.messages,
+            &params,
         )?;
-        if let Some(provider_options) = request.provider_options {
+        if let Some(provider_options) = request.request.provider_options.get(&self.provider) {
             translated.body.extend(provider_options.clone());
         }
 

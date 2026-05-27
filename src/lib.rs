@@ -64,6 +64,11 @@ mod provider_http;
 mod providers;
 pub mod types;
 
+#[doc(inline)]
+pub use providers::{
+    ResolvedChatParamRules, apply_chat_param_rules, merge_chat_params, resolve_chat_param_rules,
+};
+
 #[doc(hidden)]
 pub use inventory;
 

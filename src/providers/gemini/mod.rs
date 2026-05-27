@@ -4,9 +4,12 @@ use http::header::CONTENT_TYPE;
 use http::{HeaderMap, HeaderName, HeaderValue, Method};
 use serde_json::Value;
 
-use crate::config::{ChatParameterMap, SecretString};
+use crate::config::SecretString;
 use crate::provider_http::{
     ProviderByteStream, ProviderEndpoint, ProviderRequest, ProviderResponse, SignedProviderRequest,
+};
+use crate::providers::chat_params::{
+    apply_chat_param_rules, merge_chat_params, resolve_chat_param_rules,
 };
 use crate::providers::common::{header_map_from_config, non_empty_env, parse_response_json};
 use crate::types::chat::ChatResponse;
@@ -132,20 +135,8 @@ struct GeminiChatAdapter {
 }
 
 impl ChatCompletionAdapter for GeminiChatAdapter {
-    fn supported_chat_params(&self) -> Vec<&'static str> {
-        SUPPORTED_GEMINI_CHAT_PARAMS.to_vec()
-    }
-
-    fn map_chat_params(&self, params: ChatParameterMap) -> SigmaResult<ChatParameterMap> {
-        Ok(params)
-    }
-
     fn endpoint(&self, request: &ChatAdapterRequest<'_>) -> SigmaResult<ProviderEndpoint> {
-        let stream = request
-            .params
-            .get("stream")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
+        let stream = request.streaming;
         let endpoint = if stream {
             "streamGenerateContent"
         } else {
@@ -172,13 +163,23 @@ impl ChatCompletionAdapter for GeminiChatAdapter {
         request: ChatAdapterRequest<'_>,
         endpoint: ProviderEndpoint,
     ) -> SigmaResult<ProviderRequest> {
+        let inject_stream = request.streaming && self.stream_behavior().inject_stream;
+        let mut params =
+            merge_chat_params(request.deployment_defaults, request.request, inject_stream)?;
+        let rules = resolve_chat_param_rules(
+            SUPPORTED_GEMINI_CHAT_PARAMS,
+            request.chat_param_config,
+            request.context.provider_model,
+        );
+        apply_chat_param_rules(&self.provider, &mut params, &rules)?;
+
         let mut body = gemini_request_body(
             &self.provider,
             request.context,
-            request.messages,
-            &request.params,
+            &request.request.messages,
+            &params,
         )?;
-        if let Some(provider_options) = request.provider_options {
+        if let Some(provider_options) = request.request.provider_options.get(&self.provider) {
             for (key, value) in provider_options {
                 body.insert(key.clone(), value.clone());
             }

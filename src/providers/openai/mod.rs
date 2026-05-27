@@ -15,17 +15,19 @@ use crate::{
     StreamBehavior, submit_provider,
 };
 
+mod base;
 mod config;
 mod error;
 mod request;
 mod response;
 mod stream;
 
+use base::{OpenAiBuildContext, OpenAiChatBodyBuilder};
 use config::{
     OpenAiCompatibleConfig, OpenAiConfig, OpenAiFlavor, resolve_api_base, resolve_api_key,
 };
 use error::openai_error_response;
-use request::{chat_completions_url, openai_chat_body, rename_param};
+use request::{chat_completions_url, rename_param};
 use response::{map_response_reasoning_content, sanitize_null_usage_tokens};
 use stream::OpenAiSseStream;
 
@@ -140,20 +142,24 @@ struct OpenAiChatAdapter {
     flavor: OpenAiFlavor,
 }
 
+impl OpenAiChatBodyBuilder for OpenAiChatAdapter {
+    fn provider_id(&self) -> &ProviderId {
+        &self.provider
+    }
+
+    fn default_supported_chat_params(&self) -> &'static [&'static str] {
+        SUPPORTED_CHAT_PARAMS
+    }
+
+    fn post_process_params(&self, params: &mut ChatParameterMap) {
+        rename_param(params, "audio_output", "audio");
+        rename_param(params, "count", "n");
+        rename_param(params, "output_modalities", "modalities");
+        rename_param(params, "web_search", "web_search_options");
+    }
+}
+
 impl ChatCompletionAdapter for OpenAiChatAdapter {
-    fn supported_chat_params(&self) -> Vec<&'static str> {
-        SUPPORTED_CHAT_PARAMS.to_vec()
-    }
-
-    fn map_chat_params(&self, mut params: ChatParameterMap) -> SigmaResult<ChatParameterMap> {
-        rename_param(&mut params, "audio_output", "audio");
-        rename_param(&mut params, "count", "n");
-        rename_param(&mut params, "output_modalities", "modalities");
-        rename_param(&mut params, "web_search", "web_search_options");
-
-        Ok(params)
-    }
-
     fn endpoint(&self, _request: &ChatAdapterRequest<'_>) -> SigmaResult<ProviderEndpoint> {
         Ok(ProviderEndpoint {
             method: Method::POST,
@@ -166,12 +172,19 @@ impl ChatCompletionAdapter for OpenAiChatAdapter {
         request: ChatAdapterRequest<'_>,
         endpoint: ProviderEndpoint,
     ) -> SigmaResult<ProviderRequest> {
-        let body = openai_chat_body(
-            &self.provider,
-            request.context.provider_model,
-            request.messages,
-            &request.params,
-            request.provider_options,
+        let provider_options = request.request.provider_options.get(&self.provider);
+        let ctx = OpenAiBuildContext {
+            provider: &self.provider,
+            provider_model: request.context.provider_model,
+            messages: &request.request.messages,
+            provider_options,
+            streaming: request.streaming,
+        };
+        let body = self.build_chat_body(
+            &ctx,
+            request.request,
+            request.deployment_defaults,
+            request.chat_param_config,
         )?;
 
         let mut headers = self.headers.clone();

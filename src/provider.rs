@@ -17,7 +17,7 @@ use crate::provider_http::{
     SignedProviderRequest,
 };
 use crate::types::chat::{
-    AssistantDelta, ChatMessage, ChatRequest, ChatResponse, ChatStreamChoice, ChatStreamChunk,
+    AssistantDelta, ChatRequest, ChatResponse, ChatStreamChoice, ChatStreamChunk,
 };
 use crate::{
     DeploymentId, ModelDeploymentConfig, ModelName, ProviderId, ProviderKind, ProviderKindStatic,
@@ -515,33 +515,47 @@ impl ChatAdapterContext<'_> {
 
 /// Provider-neutral request data passed through the chat adapter lifecycle.
 ///
-/// The adapter receives original messages, merged parameters, and routing
-/// context. It then chooses an endpoint, applies provider-scoped options while
-/// constructing a structured JSON provider request, signs it, and later
-/// transforms the response or stream using the same context.
+/// The adapter owns the full `ChatRequestParams → native body` translation:
+/// it merges deployment defaults with the request's typed chat parameters,
+/// resolves user-configured chat parameter rules, applies them, and finally
+/// builds a structured JSON provider request. sigma's client layer only
+/// performs routing and dispatch.
 #[derive(Debug, Clone)]
 pub struct ChatAdapterRequest<'a> {
     /// Routing metadata for this adapter call.
     pub context: ChatAdapterContext<'a>,
-    /// Original provider-neutral chat messages.
+    /// Original provider-neutral chat request.
     ///
-    /// Adapters convert these messages into provider-native JSON inside
-    /// [`ChatCompletionAdapter::transform_request`], alongside parameter
-    /// mapping and provider option handling.
-    pub messages: &'a [ChatMessage],
-    /// Merged and policy-filtered chat parameters.
-    pub params: ChatParameterMap,
-    /// Provider-scoped request options for the selected provider.
+    /// Adapters read messages from `request.messages`, typed chat parameters
+    /// from `request.params`, and provider-scoped overrides from
+    /// `request.provider_options.get(provider_id)`.
+    pub request: &'a ChatRequest,
+    /// Deployment-level chat parameter defaults to merge before request
+    /// parameters.
     ///
-    /// This is [`None`] when the request has no `provider_options` entry for
-    /// the selected provider.
+    /// `None` when the resolved route does not come from a configured
+    /// deployment (for example, [`crate::ModelRef::ProviderModel`] direct
+    /// routing).
+    pub deployment_defaults: Option<&'a ChatParameterMap>,
+    /// Caller-configured chat parameter rules for the selected provider.
     ///
-    /// Standard adapters apply these shallow top-level fields after provider
-    /// parameter mapping and after adapter-generated fields such as `"model"`,
-    /// `"messages"`, or `"stream"`, but before serializing the request body.
-    /// Provider adapters may reserve option keys for headers or other
-    /// provider-specific controls.
-    pub provider_options: Option<&'a ChatParameterMap>,
+    /// This carries the [`crate::ProviderCommonConfig::chat_params`] entry
+    /// for the routed provider instance, including provider- and model-level
+    /// drop, rename, allow, and policy values. Adapters apply it through the
+    /// shared chat parameter pipeline inside `transform_request`. `None`
+    /// when the provider was configured without a `chat_params` block.
+    pub chat_param_config: Option<&'a crate::config::ChatParamConfig>,
+    /// Whether sigma will issue this provider HTTP call as a native stream.
+    ///
+    /// `true` only when the adapter's
+    /// [`StreamBehavior::mode`](crate::StreamBehavior) is
+    /// [`StreamMode::Native`](crate::StreamMode) and the caller invoked
+    /// `create_stream`. Adapters use this to select streaming endpoints
+    /// (e.g. Gemini's `streamGenerateContent`) and to inject the `stream`
+    /// body field. `create_stream` calls that resolve to
+    /// [`StreamMode::FakeFromResponse`](crate::StreamMode) leave this `false`
+    /// so the underlying HTTP request stays non-streaming.
+    pub streaming: bool,
 }
 
 /// Stream of semantic chat chunks returned by sigma.
@@ -574,16 +588,17 @@ pub enum StreamMode {
 /// Controls how sigma prepares and executes streaming requests.
 ///
 /// Adapters return this from [`ChatCompletionAdapter::stream_behavior`].
-/// `mode` selects the execution path. `inject_stream` controls whether sigma
-/// pre-populates the `"stream"` chat parameter before parameter rule
-/// validation; set this to `true` when the provider expects a literal
-/// `stream: true` body field, and to `false` when the adapter manages the
-/// streaming flag itself or the field would be rejected by the upstream API.
+/// `mode` selects the execution path. `inject_stream` is a hint for
+/// adapter-internal request building: set this to `true` when the adapter
+/// should add a literal `stream: true` body field before chat parameter rule
+/// validation, and to `false` when the adapter manages the streaming flag
+/// itself or the field would be rejected by the upstream API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamBehavior {
     /// Stream execution mode.
     pub mode: StreamMode,
-    /// Whether sigma should add `"stream": true` before parameter mapping.
+    /// Whether the adapter should add `"stream": true` before parameter
+    /// mapping.
     pub inject_stream: bool,
 }
 
@@ -615,15 +630,16 @@ impl Default for StreamBehavior {
 ///
 /// The lifecycle for `create` is:
 ///
-/// 1. [`ChatCompletionAdapter::supported_chat_params`]
-/// 2. [`ChatCompletionAdapter::map_chat_params`]
-/// 3. [`ChatCompletionAdapter::endpoint`]
-/// 4. [`ChatCompletionAdapter::transform_request`]
-/// 5. [`ChatCompletionAdapter::sign_request`]
-/// 6. sigma sends the signed request with its shared [`reqwest::Client`]
-/// 7. non-success HTTP statuses use
+/// 1. [`ChatCompletionAdapter::endpoint`]
+/// 2. [`ChatCompletionAdapter::transform_request`] — owns the full
+///    `ChatRequestParams` to native body translation, including merging
+///    deployment defaults, applying caller-configured chat parameter rules,
+///    and provider-specific renames or post-processing
+/// 3. [`ChatCompletionAdapter::sign_request`]
+/// 4. sigma sends the signed request with its shared [`reqwest::Client`]
+/// 5. non-success HTTP statuses use
 ///    [`ChatCompletionAdapter::transform_error_response`]
-/// 8. success responses use [`ChatCompletionAdapter::transform_response`]
+/// 6. success responses use [`ChatCompletionAdapter::transform_response`]
 ///
 /// `create_stream` follows the same preparation path. Native streams use
 /// [`ChatCompletionAdapter::transform_error_response`] for non-success HTTP
@@ -632,15 +648,6 @@ impl Default for StreamBehavior {
 /// [`ChatCompletionAdapter::transform_response`] and synthesize one chunk from
 /// the full success response.
 pub trait ChatCompletionAdapter: Send + Sync {
-    /// Returns semantic chat parameter names this provider accepts.
-    ///
-    /// sigma combines this list with [`crate::ProviderCommonConfig::chat_params`]
-    /// before calling [`ChatCompletionAdapter::map_chat_params`].
-    fn supported_chat_params(&self) -> Vec<&'static str>;
-
-    /// Maps semantic chat parameters to provider-specific parameters.
-    fn map_chat_params(&self, params: ChatParameterMap) -> SigmaResult<ChatParameterMap>;
-
     /// Selects the provider endpoint for a prepared chat request.
     fn endpoint(&self, request: &ChatAdapterRequest<'_>) -> SigmaResult<ProviderEndpoint>;
 
