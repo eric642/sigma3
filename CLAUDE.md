@@ -20,7 +20,7 @@ A general-purpose LLM API client.
 - Model routing is strongly typed. Use `ModelRef::model(...)`, `ModelRef::deployment(...)`, or `ModelRef::provider_model(...)`; do not infer providers from model string prefixes.
 - Chat-layer public types live under `src/types/chat`. These structs and enums must be provider-neutral semantic API types, not mirrors of a specific provider's wire schema or names. Provider implementations are responsible for translating chat-layer semantics into their native request/response shapes.
 - HTTP execution is provider-independent and owned by `Client` through `reqwest::Client`. Provider-specific behavior belongs in `ProviderDriver`, `ChatCompletionAdapter`, `CustomChatProvider`, or provider configuration.
-- The standard chat adapter lifecycle must remain observable and ordered: supported params, message translation, parameter mapping, environment validation, endpoint selection, request transform, signing, HTTP execution, response or stream decoding.
+- The standard chat adapter lifecycle must remain observable and ordered: supported params, message translation, parameter mapping, endpoint selection, request transform, signing, HTTP execution, response or stream decoding.
 - Use typed `thiserror` errors for configuration, routing, provider transform/signing/response, unsupported parameters, and HTTP failures.
 - Prefer focused fake providers in tests over real external providers for core routing, catalog, adapter lifecycle, and streaming behavior.
 

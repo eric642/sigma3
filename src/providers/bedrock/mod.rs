@@ -129,10 +129,6 @@ impl ChatCompletionAdapter for BedrockChatAdapter {
         Ok(params)
     }
 
-    fn validate_environment(&self) -> SigmaResult<()> {
-        Ok(())
-    }
-
     fn endpoint(&self, request: &ChatAdapterRequest<'_>) -> SigmaResult<ProviderEndpoint> {
         let stream = request
             .params

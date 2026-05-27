@@ -617,14 +617,13 @@ impl Default for StreamBehavior {
 ///
 /// 1. [`ChatCompletionAdapter::supported_chat_params`]
 /// 2. [`ChatCompletionAdapter::map_chat_params`]
-/// 3. [`ChatCompletionAdapter::validate_environment`]
-/// 4. [`ChatCompletionAdapter::endpoint`]
-/// 5. [`ChatCompletionAdapter::transform_request`]
-/// 6. [`ChatCompletionAdapter::sign_request`]
-/// 7. sigma sends the signed request with its shared [`reqwest::Client`]
-/// 8. non-success HTTP statuses use
+/// 3. [`ChatCompletionAdapter::endpoint`]
+/// 4. [`ChatCompletionAdapter::transform_request`]
+/// 5. [`ChatCompletionAdapter::sign_request`]
+/// 6. sigma sends the signed request with its shared [`reqwest::Client`]
+/// 7. non-success HTTP statuses use
 ///    [`ChatCompletionAdapter::transform_error_response`]
-/// 9. success responses use [`ChatCompletionAdapter::transform_response`]
+/// 8. success responses use [`ChatCompletionAdapter::transform_response`]
 ///
 /// `create_stream` follows the same preparation path. Native streams use
 /// [`ChatCompletionAdapter::transform_error_response`] for non-success HTTP
@@ -641,9 +640,6 @@ pub trait ChatCompletionAdapter: Send + Sync {
 
     /// Maps semantic chat parameters to provider-specific parameters.
     fn map_chat_params(&self, params: ChatParameterMap) -> SigmaResult<ChatParameterMap>;
-
-    /// Validates credentials or environment needed before each provider call.
-    fn validate_environment(&self) -> SigmaResult<()>;
 
     /// Selects the provider endpoint for a prepared chat request.
     fn endpoint(&self, request: &ChatAdapterRequest<'_>) -> SigmaResult<ProviderEndpoint>;

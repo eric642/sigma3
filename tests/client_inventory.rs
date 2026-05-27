@@ -228,11 +228,6 @@ impl ChatCompletionAdapter for FakeChatAdapter {
         Ok(params)
     }
 
-    fn validate_environment(&self) -> SigmaResult<()> {
-        push_event(&self.id, "validate_environment");
-        Ok(())
-    }
-
     fn endpoint(&self, _request: &ChatAdapterRequest<'_>) -> SigmaResult<ProviderEndpoint> {
         push_event(&self.id, "endpoint");
         Ok(ProviderEndpoint {
@@ -941,7 +936,6 @@ async fn create_runs_adapter_lifecycle_in_order() {
         vec![
             "supported_chat_params",
             "map_chat_params",
-            "validate_environment",
             "endpoint",
             "transform_request",
             "sign_request",
@@ -988,7 +982,6 @@ async fn create_lets_adapter_transform_non_success_status_into_business_error() 
         vec![
             "supported_chat_params",
             "map_chat_params",
-            "validate_environment",
             "endpoint",
             "transform_request",
             "sign_request",
@@ -1382,7 +1375,6 @@ async fn create_stream_injects_stream_param_for_native_streams() {
         vec![
             "supported_chat_params",
             "map_chat_params",
-            "validate_environment",
             "endpoint",
             "transform_request",
             "sign_request",
@@ -1418,7 +1410,6 @@ async fn create_stream_can_fake_stream_from_non_stream_response() {
         vec![
             "supported_chat_params",
             "map_chat_params",
-            "validate_environment",
             "endpoint",
             "transform_request",
             "sign_request",
@@ -1468,7 +1459,6 @@ async fn create_stream_fake_lets_adapter_transform_non_success_status_into_busin
         vec![
             "supported_chat_params",
             "map_chat_params",
-            "validate_environment",
             "endpoint",
             "transform_request",
             "sign_request",
@@ -1542,7 +1532,6 @@ async fn create_stream_native_lets_adapter_transform_non_success_status_into_bus
         vec![
             "supported_chat_params",
             "map_chat_params",
-            "validate_environment",
             "endpoint",
             "transform_request",
             "sign_request",

@@ -360,7 +360,6 @@ impl Client {
             self.resolve_chat_param_rules(context.provider, context.provider_model, adapter);
         let params = self.apply_chat_param_rules(context.provider, params, &rules)?;
         let params = adapter.map_chat_params(params)?;
-        adapter.validate_environment()?;
 
         let provider_options = request.provider_options.get(context.provider);
         let adapter_request = ChatAdapterRequest {

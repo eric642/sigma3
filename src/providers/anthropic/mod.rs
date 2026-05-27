@@ -161,10 +161,6 @@ impl ChatCompletionAdapter for AnthropicChatAdapter {
         Ok(params)
     }
 
-    fn validate_environment(&self) -> SigmaResult<()> {
-        Ok(())
-    }
-
     fn endpoint(&self, _request: &ChatAdapterRequest<'_>) -> SigmaResult<ProviderEndpoint> {
         Ok(ProviderEndpoint {
             method: Method::POST,
