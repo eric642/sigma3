@@ -42,8 +42,7 @@ const GEMINI_API_KEY_HEADER: &str = "x-goog-api-key";
 /// `parallel_tool_calls` is intentionally absent: Gemini's `generateContent`
 /// endpoint does not expose a per-request parallel tool calling toggle, and
 /// silently dropping it previously hid configuration mistakes. Callers that
-/// still want to forward it explicitly can opt in via
-/// [`crate::ChatParamConfig::allow`] or
+/// still want to forward a provider-native field explicitly can use
 /// [`crate::types::chat::ChatRequest::provider_options`].
 const SUPPORTED_GEMINI_CHAT_PARAMS: &[&str] = &[
     "audio_output",
@@ -170,7 +169,7 @@ impl ChatCompletionAdapter for GeminiChatAdapter {
         )?;
         let rules = resolve_chat_param_rules(
             SUPPORTED_GEMINI_CHAT_PARAMS,
-            request.chat_param_config,
+            None,
             request.context.provider_model,
         );
         apply_chat_param_rules(&self.provider, &mut params, &rules)?;

@@ -8,9 +8,9 @@ use sigma::types::chat::{
 };
 use sigma::types::shared::{FunctionObject, ReasoningEffort, ResponseFormat};
 use sigma::{
-    ChatParamConfig, Client, ClientConfig, ModelDeploymentConfig, ModelName, ModelRef,
-    ProviderCatalog, ProviderCommonConfig, ProviderConfigMap, ProviderId, ProviderInstanceConfig,
-    ProviderKind, SigmaError,
+    Client, ClientConfig, ModelDeploymentConfig, ModelName, ModelRef, ProviderCatalog,
+    ProviderCommonConfig, ProviderConfigMap, ProviderId, ProviderInstanceConfig, ProviderKind,
+    SigmaError,
 };
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request as WiremockRequest, ResponseTemplate};
@@ -36,7 +36,6 @@ fn bedrock_config_with_provider_model(
                 api_base: Some(api_base),
                 api_key: None,
                 headers: HashMap::new(),
-                chat_params: ChatParamConfig::default(),
             },
             config: provider_config_map(provider_config),
         }],

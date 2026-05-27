@@ -12,7 +12,7 @@ use sigma::types::chat::{
 };
 use sigma::types::shared::{FunctionName, FunctionObject};
 use sigma::{
-    ChatParamConfig, ChatStream, Client, ClientConfig, ModelDeploymentConfig, ModelName, ModelRef,
+    ChatStream, Client, ClientConfig, ModelDeploymentConfig, ModelName, ModelRef,
     ProviderCommonConfig, ProviderConfigMap, ProviderId, ProviderInstanceConfig, ProviderKind,
     SigmaError, SigmaResult,
 };
@@ -230,7 +230,6 @@ fn live_client_config(config: &LiveBedrockConfig) -> ClientConfig {
                 api_base: None,
                 api_key: None,
                 headers: HashMap::new(),
-                chat_params: ChatParamConfig::default(),
             },
             config: provider_config,
         }],

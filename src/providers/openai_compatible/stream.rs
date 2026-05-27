@@ -11,7 +11,6 @@ use crate::providers::common::{SseLineBuffer, event_data};
 use crate::types::chat::ChatStreamChunk;
 use crate::{ProviderId, SigmaError, SigmaResult};
 
-use super::config::OpenAiFlavor;
 use super::response::{map_stream_reasoning_content, sanitize_null_usage_tokens};
 
 pub(super) struct OpenAiSseStream {
@@ -20,14 +19,14 @@ pub(super) struct OpenAiSseStream {
     buffer: SseLineBuffer,
     pending: VecDeque<SigmaResult<ChatStreamChunk>>,
     done: bool,
-    flavor: OpenAiFlavor,
+    sanitize_null_usage_tokens: bool,
 }
 
 impl OpenAiSseStream {
     pub(super) fn new(
         provider: ProviderId,
         stream: ProviderByteStream,
-        flavor: OpenAiFlavor,
+        sanitize_null_usage_tokens: bool,
     ) -> Self {
         Self {
             provider,
@@ -35,7 +34,7 @@ impl OpenAiSseStream {
             buffer: SseLineBuffer::new(),
             pending: VecDeque::new(),
             done: false,
-            flavor,
+            sanitize_null_usage_tokens,
         }
     }
 
@@ -110,7 +109,7 @@ impl OpenAiSseStream {
             }
         };
 
-        if self.flavor.sanitizes_usage() {
+        if self.sanitize_null_usage_tokens {
             sanitize_null_usage_tokens(&mut value);
         }
         map_stream_reasoning_content(&mut value);

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use futures_util::StreamExt;
 
-use crate::config::{ChatParamConfig, ClientConfig};
+use crate::config::ClientConfig;
 use crate::provider::{
     ChatAdapterContext, ChatAdapterRequest, ChatStream, ProviderCatalog, ProviderInit,
     deployment_model_info,
@@ -36,7 +36,6 @@ pub struct Client {
 struct ClientInner {
     config: ClientConfig,
     providers: HashMap<ProviderId, Arc<dyn ProviderDriver>>,
-    provider_chat_params: HashMap<ProviderId, ChatParamConfig>,
     deployments_by_id: HashMap<DeploymentId, ModelDeploymentConfig>,
     deployments_by_public_model: HashMap<ModelName, DeploymentId>,
     http_client: reqwest::Client,
@@ -80,7 +79,6 @@ impl ClientBuilder {
     pub fn build(self, config: ClientConfig) -> SigmaResult<Client> {
         let catalog = ProviderCatalog::from_inventory()?;
         let mut providers = HashMap::new();
-        let mut provider_chat_params = HashMap::new();
 
         for provider_config in &config.providers {
             if providers.contains_key(&provider_config.id) {
@@ -95,10 +93,6 @@ impl ClientBuilder {
                 }
             })?;
             let provider = constructor(ProviderInit::from(provider_config.clone()))?;
-            provider_chat_params.insert(
-                provider_config.id.clone(),
-                provider_config.common.chat_params.clone(),
-            );
             providers.insert(provider_config.id.clone(), provider);
         }
 
@@ -143,7 +137,6 @@ impl ClientBuilder {
             inner: Arc::new(ClientInner {
                 config,
                 providers,
-                provider_chat_params,
                 deployments_by_id,
                 deployments_by_public_model,
                 http_client: self.http_client,
@@ -347,7 +340,6 @@ impl Client {
                 .deployment
                 .as_ref()
                 .map(|deployment| &deployment.defaults),
-            chat_param_config: self.inner.provider_chat_params.get(context.provider),
             streaming,
         };
 

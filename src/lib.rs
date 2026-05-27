@@ -50,7 +50,9 @@
 //! provider from model-name prefixes.
 //!
 //! sigma links built-in chat providers for OpenAI (`kind = "openai"`) and
-//! OpenAI-compatible HTTP endpoints (`kind = "openai-compatible"`). Both use
+//! OpenAI-compatible HTTP endpoints (`kind = "openai-compatible"`). Simple
+//! provider crates that expose the same wire shape can register their own kind
+//! and delegate construction to [`OpenAiCompatibleProvider`]. All providers use
 //! the standard chat completions namespace and can be selected through
 //! deployment routing or [`ModelRef::provider_model`].
 
@@ -66,6 +68,7 @@ pub mod types;
 
 #[doc(inline)]
 pub use providers::{
+    OpenAiCompatibleConfig, OpenAiCompatibleProvider, OpenAiCompatibleProviderSpec,
     ResolvedChatParamRules, apply_chat_param_rules, merge_chat_params, resolve_chat_param_rules,
 };
 

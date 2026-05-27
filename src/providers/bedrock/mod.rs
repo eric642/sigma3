@@ -49,8 +49,7 @@ const JSON_TOOL_NAME: &str = "json_tool_call";
 /// `parallel_tool_calls` and `stream_options` are intentionally absent: the
 /// Bedrock Converse API does not expose either control, and silently dropping
 /// them previously hid configuration mistakes. Callers that still need to
-/// experiment with these fields can opt in via
-/// [`crate::ChatParamConfig::allow`] or
+/// experiment with provider-native fields can use
 /// [`crate::types::chat::ChatRequest::provider_options`].
 const SUPPORTED_CHAT_PARAMS: &[&str] = &[
     "guardrailConfig",
@@ -142,11 +141,8 @@ impl ChatCompletionAdapter for BedrockChatAdapter {
             request.request,
             request.streaming,
         )?;
-        let rules = resolve_chat_param_rules(
-            SUPPORTED_CHAT_PARAMS,
-            request.chat_param_config,
-            request.context.provider_model,
-        );
+        let rules =
+            resolve_chat_param_rules(SUPPORTED_CHAT_PARAMS, None, request.context.provider_model);
         apply_chat_param_rules(&self.provider, &mut params, &rules)?;
 
         let mut translated = bedrock_request_body(

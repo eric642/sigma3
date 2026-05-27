@@ -1,10 +1,10 @@
-//! Shared chat-parameter pipeline used by every provider adapter.
+//! Shared chat-parameter pipeline used by provider adapters.
 //!
 //! The standard chat lifecycle merges deployment defaults with the typed
 //! [`ChatRequestParams`](crate::types::chat::ChatRequestParams), then resolves a
-//! [`ResolvedChatParamRules`] from the provider's built-in support set and the
-//! caller-configured [`ChatParamConfig`], and finally walks the parameter map
-//! through four ordered steps:
+//! [`ResolvedChatParamRules`] from the provider's built-in support set and an
+//! optional caller-configured [`ChatParamConfig`], and finally walks the
+//! parameter map through four ordered steps:
 //!
 //! 1. Drop top-level keys listed in [`ChatParamConfig::drop`].
 //! 2. Reject or drop keys outside the resolved support set, controlled by the

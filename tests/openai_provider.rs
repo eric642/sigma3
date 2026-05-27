@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use futures_util::StreamExt;
 use http::StatusCode;
@@ -15,12 +16,40 @@ use sigma::types::shared::{
     FunctionName, FunctionObject, ImageUrl, ResponseFormat, ResponseFormatJsonSchema,
 };
 use sigma::{
-    ChatParamConfig, ChatParameterMap, Client, ClientConfig, ModelDeploymentConfig, ModelName,
-    ModelRef, ProviderCatalog, ProviderCommonConfig, ProviderConfigMap, ProviderId,
-    ProviderInstanceConfig, ProviderKind, SecretString, SigmaError,
+    ChatParameterMap, Client, ClientConfig, ModelDeploymentConfig, ModelName, ModelRef,
+    ProviderCatalog, ProviderCommonConfig, ProviderConfigMap, ProviderId, ProviderInstanceConfig,
+    ProviderKind, SecretString, SigmaError,
+};
+use sigma::{
+    OpenAiCompatibleConfig, OpenAiCompatibleProvider, OpenAiCompatibleProviderSpec, ProviderDriver,
+    ProviderInit, ProviderKindStatic, SigmaResult, submit_provider,
 };
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request as WiremockRequest, ResponseTemplate};
+
+const DELEGATING_OPENAI_COMPATIBLE_KIND: ProviderKindStatic =
+    ProviderKindStatic::new("delegating-openai-compatible");
+const DELEGATING_OPENAI_COMPATIBLE_SPEC: OpenAiCompatibleProviderSpec =
+    OpenAiCompatibleProviderSpec {
+        default_api_base: None,
+        api_base_env: &[],
+        api_key_env: &[],
+        requires_authentication: true,
+        sanitize_null_usage_tokens: true,
+    };
+
+#[allow(clippy::result_large_err)]
+fn delegating_openai_compatible_provider(
+    init: ProviderInit<OpenAiCompatibleConfig>,
+) -> SigmaResult<Arc<dyn ProviderDriver>> {
+    OpenAiCompatibleProvider::from_config(init, DELEGATING_OPENAI_COMPATIBLE_SPEC)
+}
+
+submit_provider! {
+    kind: DELEGATING_OPENAI_COMPATIBLE_KIND,
+    constructor: delegating_openai_compatible_provider,
+    config: OpenAiCompatibleConfig,
+}
 
 fn openai_config(
     kind: &str,
@@ -38,7 +67,6 @@ fn openai_config(
                 api_base: api_base.into(),
                 api_key: api_key.into(),
                 headers,
-                chat_params: ChatParamConfig::default(),
             },
             config: provider_config_map(provider_config),
         }],
@@ -164,9 +192,12 @@ fn catalog_from_inventory_exposes_openai_provider_config_schemas() {
         false
     );
     assert_eq!(
-        openai.schema["properties"]["chat_params"]["properties"]["policy"]["default"],
+        compatible.schema["properties"]["config"]["properties"]["chat_params"]["properties"]["policy"]
+            ["default"],
         "reject_unsupported"
     );
+    assert!(openai.schema["properties"].get("chat_params").is_none());
+    assert!(compatible.schema["properties"].get("chat_params").is_none());
     assert_eq!(
         compatible.schema["properties"]["config"]["additionalProperties"],
         false
@@ -884,10 +915,14 @@ async fn compatible_create_maps_max_completion_tokens_when_chat_params_rename_co
         HashMap::new(),
         Value::Null,
     );
-    config.providers[0].common.chat_params.rename = Some(BTreeMap::from([(
-        "max_completion_tokens".to_string(),
-        "max_tokens".to_string(),
-    )]));
+    config.providers[0].config.insert(
+        "chat_params".to_string(),
+        json!({
+            "rename": {
+                "max_completion_tokens": "max_tokens"
+            }
+        }),
+    );
     let client = Client::build(config).unwrap();
     let mut request = request(ModelRef::model("gpt-public"));
     request.params.max_completion_tokens = Some(42);
@@ -897,6 +932,47 @@ async fn compatible_create_maps_max_completion_tokens_when_chat_params_rename_co
     let body = last_body(&server).await;
     assert_eq!(body["max_tokens"], 42);
     assert!(body.get("max_completion_tokens").is_none());
+}
+
+#[tokio::test]
+async fn delegated_compatible_provider_uses_openai_compatible_base_driver() {
+    let server = MockServer::start().await;
+    mount_json_response(
+        &server,
+        "/v1/chat/completions",
+        response_body("gpt-4o-mini", "ok"),
+    )
+    .await;
+    let client = Client::build(openai_config(
+        "delegating-openai-compatible",
+        "delegated-compatible",
+        Some(format!("{}/v1", server.uri())),
+        Some(SecretString::from("delegated-token")),
+        HashMap::new(),
+        json!({
+            "chat_params": {
+                "rename": {
+                    "max_completion_tokens": "max_tokens"
+                }
+            }
+        }),
+    ))
+    .unwrap();
+    let mut request = request(ModelRef::model("gpt-public"));
+    request.params.max_completion_tokens = Some(17);
+
+    client.chat().create(&request).await.unwrap();
+
+    let sent = last_request(&server).await;
+    let body: Value = sent.body_json().unwrap();
+    assert_eq!(body["max_tokens"], 17);
+    assert!(body.get("max_completion_tokens").is_none());
+    assert_eq!(
+        sent.headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok()),
+        Some("Bearer delegated-token")
+    );
 }
 
 #[test]

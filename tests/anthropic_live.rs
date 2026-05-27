@@ -16,9 +16,9 @@ use sigma::types::chat::{
 };
 use sigma::types::shared::{FunctionName, FunctionObject, ReasoningEffort};
 use sigma::{
-    ChatParamConfig, ChatParameterMap, ChatStream, Client, ClientConfig, ModelDeploymentConfig,
-    ModelName, ModelRef, ProviderCommonConfig, ProviderConfigMap, ProviderId,
-    ProviderInstanceConfig, ProviderKind, SecretString, SigmaError, SigmaResult,
+    ChatParameterMap, ChatStream, Client, ClientConfig, ModelDeploymentConfig, ModelName, ModelRef,
+    ProviderCommonConfig, ProviderConfigMap, ProviderId, ProviderInstanceConfig, ProviderKind,
+    SecretString, SigmaError, SigmaResult,
 };
 
 const DEFAULT_ANTHROPIC_TEST_MODEL: &str = "claude-haiku-4-5-20251001";
@@ -164,7 +164,6 @@ fn live_client_config(config: &LiveAnthropicConfig) -> ClientConfig {
                 api_base: config.api_base.clone(),
                 api_key: Some(SecretString::from(config.api_key.clone())),
                 headers: HashMap::new(),
-                chat_params: ChatParamConfig::default(),
             },
             config: ProviderConfigMap::new(),
         }],

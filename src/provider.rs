@@ -1,5 +1,5 @@
 use std::any::Any;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -10,7 +10,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use crate::config::{
-    ChatParameterMap, ParamPolicy, ProviderCommonConfig, ProviderConfigMap, ProviderInstanceConfig,
+    ChatParameterMap, ProviderCommonConfig, ProviderConfigMap, ProviderInstanceConfig,
 };
 use crate::provider_http::{
     ProviderByteStream, ProviderEndpoint, ProviderRequest, ProviderResponse, ProviderState,
@@ -264,63 +264,6 @@ struct ProviderCommonConfigSchemaView {
     /// Static headers made available to the provider constructor.
     #[serde(default)]
     headers: HashMap<String, String>,
-    /// Common chat parameter support, allow, drop, rename, and per-provider-model override rules.
-    #[serde(default)]
-    chat_params: ChatParamConfigSchemaView,
-}
-
-#[derive(Default, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-#[allow(dead_code)]
-struct ChatParamConfigSchemaView {
-    /// How sigma handles parameters outside the resolved provider support set.
-    #[serde(default = "default_param_policy")]
-    policy: ParamPolicy,
-    /// Complete semantic chat parameter support set. When omitted, the provider adapter default is used.
-    #[serde(default)]
-    #[schemars(!default)]
-    supported: Vec<String>,
-    /// Additional parameter names accepted as-is.
-    #[serde(default)]
-    allow: Vec<String>,
-    /// Top-level parameter names or nested paths to remove before sending the provider request.
-    #[serde(default)]
-    drop: Vec<String>,
-    /// Top-level source-to-target field renames applied after unsupported-parameter handling.
-    #[serde(default)]
-    #[schemars(!default)]
-    rename: BTreeMap<String, String>,
-    /// Exact provider-native model names mapped to model-specific parameter rules.
-    #[serde(default)]
-    models: BTreeMap<ModelName, ChatParamModelConfigSchemaView>,
-}
-
-#[derive(Default, JsonSchema)]
-#[schemars(deny_unknown_fields)]
-#[allow(dead_code)]
-struct ChatParamModelConfigSchemaView {
-    /// Model-specific unsupported-parameter policy.
-    #[serde(default)]
-    #[schemars(!default)]
-    policy: ParamPolicy,
-    /// Complete support set for this provider-native model.
-    #[serde(default)]
-    #[schemars(!default)]
-    supported: Vec<String>,
-    /// Additional accepted parameter names for this provider-native model.
-    #[serde(default)]
-    allow: Vec<String>,
-    /// Top-level parameter names or nested paths to remove for this model.
-    #[serde(default)]
-    drop: Vec<String>,
-    /// Top-level source-to-target field renames for this model.
-    #[serde(default)]
-    #[schemars(!default)]
-    rename: BTreeMap<String, String>,
-}
-
-const fn default_param_policy() -> ParamPolicy {
-    ParamPolicy::RejectUnsupported
 }
 
 /// Initialization data passed to a provider constructor.
@@ -515,9 +458,9 @@ impl ChatAdapterContext<'_> {
 ///
 /// The adapter owns the full `ChatRequestParams → native body` translation:
 /// it merges deployment defaults with the request's typed chat parameters,
-/// resolves user-configured chat parameter rules, applies them, and finally
-/// builds a structured JSON provider request. sigma's client layer only
-/// performs routing and dispatch.
+/// applies adapter-owned compatibility rules, and finally builds a structured
+/// JSON provider request. sigma's client layer only performs routing and
+/// dispatch.
 #[derive(Debug, Clone)]
 pub struct ChatAdapterRequest<'a> {
     /// Routing metadata for this adapter call.
@@ -535,14 +478,6 @@ pub struct ChatAdapterRequest<'a> {
     /// deployment (for example, [`crate::ModelRef::ProviderModel`] direct
     /// routing).
     pub deployment_defaults: Option<&'a ChatParameterMap>,
-    /// Caller-configured chat parameter rules for the selected provider.
-    ///
-    /// This carries the [`crate::ProviderCommonConfig::chat_params`] entry
-    /// for the routed provider instance, including provider- and model-level
-    /// drop, rename, allow, and policy values. Adapters apply it through the
-    /// shared chat parameter pipeline inside `transform_request`. `None`
-    /// when the provider was configured without a `chat_params` block.
-    pub chat_param_config: Option<&'a crate::config::ChatParamConfig>,
     /// Whether the caller invoked `create_stream`.
     ///
     /// Adapters use this to select streaming endpoints (for example Gemini's
@@ -569,8 +504,8 @@ pub type ChatStream = Pin<Box<dyn Stream<Item = SigmaResult<ChatStreamChunk>> + 
 /// 1. [`ChatCompletionAdapter::endpoint`]
 /// 2. [`ChatCompletionAdapter::transform_request`] — owns the full
 ///    `ChatRequestParams` to native body translation, including merging
-///    deployment defaults, applying caller-configured chat parameter rules,
-///    and provider-specific renames or post-processing
+///    deployment defaults and applying adapter-owned compatibility rules,
+///    provider-specific renames, or post-processing
 /// 3. [`ChatCompletionAdapter::sign_request`]
 /// 4. sigma sends the signed request with its shared [`reqwest::Client`]
 /// 5. non-success HTTP statuses use

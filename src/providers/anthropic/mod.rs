@@ -175,11 +175,8 @@ impl ChatCompletionAdapter for AnthropicChatAdapter {
             request.request,
             request.streaming,
         )?;
-        let rules = resolve_chat_param_rules(
-            SUPPORTED_CHAT_PARAMS,
-            request.chat_param_config,
-            request.context.provider_model,
-        );
+        let rules =
+            resolve_chat_param_rules(SUPPORTED_CHAT_PARAMS, None, request.context.provider_model);
         apply_chat_param_rules(&self.provider, &mut params, &rules)?;
 
         let mut beta_values = self.collect_beta_values(&mut params, provider_options);

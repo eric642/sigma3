@@ -14,9 +14,9 @@ use sigma::types::shared::{
     ResponseFormatJsonSchema,
 };
 use sigma::{
-    ChatParamConfig, Client, ClientConfig, ModelDeploymentConfig, ModelName, ModelRef,
-    ProviderCatalog, ProviderCommonConfig, ProviderConfigMap, ProviderId, ProviderInstanceConfig,
-    ProviderKind, SecretString, SigmaError,
+    Client, ClientConfig, ModelDeploymentConfig, ModelName, ModelRef, ProviderCatalog,
+    ProviderCommonConfig, ProviderConfigMap, ProviderId, ProviderInstanceConfig, ProviderKind,
+    SecretString, SigmaError,
 };
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, Request as WiremockRequest, ResponseTemplate};
@@ -34,7 +34,6 @@ fn gemini_config_with_provider_model(api_base: String, provider_model: &str) -> 
                 api_base: Some(api_base),
                 api_key: Some(SecretString::from("gemini-test-key")),
                 headers: HashMap::new(),
-                chat_params: ChatParamConfig::default(),
             },
             config: ProviderConfigMap::new(),
         }],

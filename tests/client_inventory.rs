@@ -1,6 +1,6 @@
 #![allow(clippy::result_large_err)]
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use futures_util::StreamExt;
@@ -13,14 +13,13 @@ use sigma::types::chat::{
     DeveloperMessage, TextContent, UserMessage,
 };
 use sigma::{
-    ChatAdapterContext, ChatAdapterRequest, ChatCompletionAdapter, ChatParamConfig,
-    ChatParamModelConfig, ChatParameterMap, ChatStream, Client, ClientConfig,
-    ModelDeploymentConfig, ModelName, ModelRef, ParamPolicy, ProviderByteStream, ProviderCatalog,
-    ProviderCommonConfig, ProviderConfigMap, ProviderDriver, ProviderEndpoint, ProviderId,
-    ProviderInit, ProviderInstanceConfig, ProviderKind, ProviderKindStatic, ProviderRequest,
-    ProviderResponse, SecretString, SigmaError, SigmaResult, SignedProviderRequest,
-    apply_chat_param_rules, merge_chat_params, provider_registration, resolve_chat_param_rules,
-    submit_provider,
+    ChatAdapterContext, ChatAdapterRequest, ChatCompletionAdapter, ChatParameterMap, ChatStream,
+    Client, ClientConfig, ModelDeploymentConfig, ModelName, ModelRef, ProviderByteStream,
+    ProviderCatalog, ProviderCommonConfig, ProviderConfigMap, ProviderDriver, ProviderEndpoint,
+    ProviderId, ProviderInit, ProviderInstanceConfig, ProviderKind, ProviderKindStatic,
+    ProviderRequest, ProviderResponse, SecretString, SigmaError, SigmaResult,
+    SignedProviderRequest, apply_chat_param_rules, merge_chat_params, provider_registration,
+    resolve_chat_param_rules, submit_provider,
 };
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request as WiremockRequest, ResponseTemplate};
@@ -228,7 +227,7 @@ impl ChatCompletionAdapter for FakeChatAdapter {
         )?;
         let rules = resolve_chat_param_rules(
             FAKE_SUPPORTED_CHAT_PARAMS,
-            request.chat_param_config,
+            None,
             request.context.provider_model,
         );
         apply_chat_param_rules(&self.id, &mut params, &rules)?;
@@ -464,29 +463,7 @@ fn provider_config_map(value: Value) -> ProviderConfigMap {
     }
 }
 
-fn config(
-    provider_id: &str,
-    api_base: &str,
-    provider_config: Value,
-    param_policy: ParamPolicy,
-) -> ClientConfig {
-    config_with_chat_params(
-        provider_id,
-        api_base,
-        provider_config,
-        ChatParamConfig {
-            policy: Some(param_policy),
-            ..ChatParamConfig::default()
-        },
-    )
-}
-
-fn config_with_chat_params(
-    provider_id: &str,
-    api_base: &str,
-    provider_config: Value,
-    chat_params: ChatParamConfig,
-) -> ClientConfig {
+fn config(provider_id: &str, api_base: &str, provider_config: Value) -> ClientConfig {
     ClientConfig {
         providers: vec![ProviderInstanceConfig {
             id: provider_id.into(),
@@ -495,7 +472,6 @@ fn config_with_chat_params(
                 api_base: Some(api_base.to_string()),
                 api_key: None,
                 headers: HashMap::new(),
-                chat_params,
             },
             config: provider_config_map(provider_config),
         }],
@@ -586,7 +562,6 @@ fn provider_init_deserialize_config_rejects_unknown_provider_config_fields() {
             api_base: Some("http://localhost:8080/v1".to_string()),
             api_key: None,
             headers: HashMap::new(),
-            chat_params: ChatParamConfig::default(),
         },
         config: provider_config_map(json!({
             "unknown": true
@@ -611,36 +586,9 @@ fn request(model: ModelRef) -> sigma::types::chat::ChatRequest {
     ChatRequest::new(model, vec![UserMessage::from("hello").into()])
 }
 
-fn client(
-    provider_id: &str,
-    server: &MockServer,
-    provider_config: Value,
-    param_policy: ParamPolicy,
-) -> Client {
+fn client(provider_id: &str, server: &MockServer, provider_config: Value) -> Client {
     clear_events(provider_id);
-    Client::build(config(
-        provider_id,
-        &server.uri(),
-        provider_config,
-        param_policy,
-    ))
-    .unwrap()
-}
-
-fn client_with_chat_params(
-    provider_id: &str,
-    server: &MockServer,
-    provider_config: Value,
-    chat_params: ChatParamConfig,
-) -> Client {
-    clear_events(provider_id);
-    Client::build(config_with_chat_params(
-        provider_id,
-        &server.uri(),
-        provider_config,
-        chat_params,
-    ))
-    .unwrap()
+    Client::build(config(provider_id, &server.uri(), provider_config)).unwrap()
 }
 
 fn duplicate_constructor<TConfig>(
@@ -767,12 +715,7 @@ fn provider_request_body_is_structured_json() {
 async fn create_routes_public_model_to_provider_model() {
     let server = MockServer::start().await;
     mount_chat_response(&server, "http.execute", "ok").await;
-    let client = client(
-        "p-public",
-        &server,
-        Value::Null,
-        ParamPolicy::RejectUnsupported,
-    );
+    let client = client("p-public", &server, Value::Null);
 
     let response = client
         .chat()
@@ -787,12 +730,7 @@ async fn create_routes_public_model_to_provider_model() {
 async fn create_routes_deployment_id_to_provider_model() {
     let server = MockServer::start().await;
     mount_chat_response(&server, "http.execute", "ok").await;
-    let client = client(
-        "p-deployment",
-        &server,
-        Value::Null,
-        ParamPolicy::RejectUnsupported,
-    );
+    let client = client("p-deployment", &server, Value::Null);
 
     let response = client
         .chat()
@@ -807,12 +745,7 @@ async fn create_routes_deployment_id_to_provider_model() {
 async fn create_returns_invalid_argument_when_model_empty_and_default_unset() {
     let server = MockServer::start().await;
     let provider_id = "p-empty-model";
-    let client = client(
-        provider_id,
-        &server,
-        Value::Null,
-        ParamPolicy::RejectUnsupported,
-    );
+    let client = client(provider_id, &server, Value::Null);
 
     let err = client
         .chat()
@@ -832,12 +765,7 @@ async fn create_routes_provider_model_directly() {
     let server = MockServer::start().await;
     mount_chat_response(&server, "http.execute", "ok").await;
     let provider_id = "p-direct";
-    let mut config = config(
-        provider_id,
-        &server.uri(),
-        Value::Null,
-        ParamPolicy::RejectUnsupported,
-    );
+    let mut config = config(provider_id, &server.uri(), Value::Null);
     config.deployments.clear();
 
     let client = Client::builder()
@@ -861,12 +789,7 @@ async fn create_routes_provider_model_directly() {
 async fn create_accepts_borrowed_request_without_consuming_it() {
     let server = MockServer::start().await;
     mount_chat_response(&server, "http.execute", "ok").await;
-    let client = client(
-        "p-borrowed-create",
-        &server,
-        Value::Null,
-        ParamPolicy::RejectUnsupported,
-    );
+    let client = client("p-borrowed-create", &server, Value::Null);
     let request = request(ModelRef::model("gpt-public"));
 
     client.chat().create(&request).await.unwrap();
@@ -883,12 +806,7 @@ async fn create_stream_accepts_borrowed_request_without_consuming_it() {
         stream_chunk_bytes("provider-gpt", "chunk"),
     )
     .await;
-    let client = client(
-        "p-borrowed-stream",
-        &server,
-        Value::Null,
-        ParamPolicy::RejectUnsupported,
-    );
+    let client = client("p-borrowed-stream", &server, Value::Null);
     let request = request(ModelRef::model("gpt-public"));
 
     let mut stream = client.chat().create_stream(&request).await.unwrap();
@@ -902,12 +820,7 @@ async fn create_runs_adapter_lifecycle_in_order() {
     let server = MockServer::start().await;
     let provider_id = "p-lifecycle";
     mount_chat_response(&server, "http.execute", "ok").await;
-    let client = client(
-        provider_id,
-        &server,
-        Value::Null,
-        ParamPolicy::RejectUnsupported,
-    );
+    let client = client(provider_id, &server, Value::Null);
 
     client
         .chat()
@@ -932,12 +845,7 @@ async fn create_lets_adapter_transform_non_success_status_into_business_error() 
     let server = MockServer::start().await;
     let provider_id = "p-create-error";
     mount_error_response(&server, "http.execute").await;
-    let client = client(
-        provider_id,
-        &server,
-        Value::Null,
-        ParamPolicy::RejectUnsupported,
-    );
+    let client = client(provider_id, &server, Value::Null);
 
     let err = client
         .chat()
@@ -974,12 +882,7 @@ async fn create_lets_adapter_transform_non_success_status_into_business_error() 
 #[tokio::test]
 async fn create_rejects_unsupported_params_when_policy_rejects() {
     let server = MockServer::start().await;
-    let client = client(
-        "p-reject",
-        &server,
-        Value::Null,
-        ParamPolicy::RejectUnsupported,
-    );
+    let client = client("p-reject", &server, Value::Null);
 
     let mut request = request(ModelRef::model("gpt-public"));
     request.params.count = Some(2);
@@ -992,212 +895,11 @@ async fn create_rejects_unsupported_params_when_policy_rejects() {
 }
 
 #[tokio::test]
-async fn create_drops_unsupported_params_when_policy_drops() {
-    let server = MockServer::start().await;
-    mount_chat_response(&server, "http.execute", "ok").await;
-    let client = client("p-drop", &server, Value::Null, ParamPolicy::DropUnsupported);
-
-    let mut request = request(ModelRef::model("gpt-public"));
-    request.params.count = Some(2);
-    client.chat().create(&request).await.unwrap();
-
-    assert!(last_body(&server).await.get("count").is_none());
-}
-
-#[tokio::test]
-async fn create_allows_provider_configured_params() {
-    let server = MockServer::start().await;
-    mount_chat_response(&server, "http.execute", "ok").await;
-    let client = client_with_chat_params(
-        "p-allow",
-        &server,
-        Value::Null,
-        ChatParamConfig {
-            allow: vec!["count".to_string()],
-            ..ChatParamConfig::default()
-        },
-    );
-
-    let mut request = request(ModelRef::model("gpt-public"));
-    request.params.count = Some(2);
-    client.chat().create(&request).await.unwrap();
-
-    assert_eq!(last_body(&server).await["count"], 2);
-}
-
-#[tokio::test]
-async fn create_drops_provider_configured_top_level_params_before_validation() {
-    let server = MockServer::start().await;
-    mount_chat_response(&server, "http.execute", "ok").await;
-    let client = client_with_chat_params(
-        "p-drop-top",
-        &server,
-        Value::Null,
-        ChatParamConfig {
-            drop: vec!["count".to_string()],
-            ..ChatParamConfig::default()
-        },
-    );
-
-    let mut request = request(ModelRef::model("gpt-public"));
-    request.params.count = Some(2);
-    client.chat().create(&request).await.unwrap();
-
-    assert!(last_body(&server).await.get("count").is_none());
-}
-
-#[tokio::test]
-async fn create_renames_provider_configured_params() {
-    let server = MockServer::start().await;
-    mount_chat_response(&server, "http.execute", "ok").await;
-    let client = client_with_chat_params(
-        "p-rename",
-        &server,
-        Value::Null,
-        ChatParamConfig {
-            rename: Some(BTreeMap::from([(
-                "max_completion_tokens".to_string(),
-                "max_tokens".to_string(),
-            )])),
-            ..ChatParamConfig::default()
-        },
-    );
-
-    let mut request = request(ModelRef::model("gpt-public"));
-    request.params.max_completion_tokens = Some(42);
-    client.chat().create(&request).await.unwrap();
-
-    let body = last_body(&server).await;
-    assert_eq!(body["max_tokens"], 42);
-    assert!(body.get("max_completion_tokens").is_none());
-}
-
-#[tokio::test]
-async fn create_applies_nested_provider_drop_after_mapping() {
-    let server = MockServer::start().await;
-    mount_chat_response(&server, "http.execute", "ok").await;
-    let mut config = config_with_chat_params(
-        "p-drop-nested",
-        &server.uri(),
-        Value::Null,
-        ChatParamConfig {
-            allow: vec!["tools".to_string()],
-            drop: vec!["tools[*].function.parameters.examples".to_string()],
-            ..ChatParamConfig::default()
-        },
-    );
-    config.deployments[0].defaults.insert(
-        "tools".to_string(),
-        json!([{
-            "type": "function",
-            "function": {
-                "name": "lookup",
-                "parameters": {
-                    "type": "object",
-                    "examples": [{"city": "Paris"}]
-                }
-            }
-        }]),
-    );
-    let client = Client::build(config).unwrap();
-
-    client
-        .chat()
-        .create(&request(ModelRef::model("gpt-public")))
-        .await
-        .unwrap();
-
-    let parameters = &last_body(&server).await["tools"][0]["function"]["parameters"];
-    assert_eq!(parameters["type"], "object");
-    assert!(parameters.get("examples").is_none());
-}
-
-#[tokio::test]
-async fn create_uses_provider_model_specific_param_rules() {
-    let server = MockServer::start().await;
-    mount_chat_response(&server, "http.execute", "ok").await;
-    let mut config = config_with_chat_params(
-        "p-model-rules",
-        &server.uri(),
-        Value::Null,
-        ChatParamConfig {
-            models: BTreeMap::from([(
-                ModelName::from("provider-gpt"),
-                ChatParamModelConfig {
-                    allow: vec!["count".to_string()],
-                    ..ChatParamModelConfig::default()
-                },
-            )]),
-            ..ChatParamConfig::default()
-        },
-    );
-    config.deployments.push(ModelDeploymentConfig {
-        id: "dep-strict".into(),
-        public_model: "gpt-strict".into(),
-        provider: "p-model-rules".into(),
-        provider_model: "provider-strict".into(),
-        defaults: serde_json::Map::new(),
-        model_info: Value::Null,
-    });
-    let client = Client::build(config).unwrap();
-
-    let mut allowed = request(ModelRef::model("gpt-public"));
-    allowed.params.count = Some(2);
-    client.chat().create(&allowed).await.unwrap();
-
-    let mut rejected = request(ModelRef::model("gpt-strict"));
-    rejected.params.count = Some(2);
-    let err = client.chat().create(&rejected).await.unwrap_err();
-
-    assert!(matches!(
-        err,
-        SigmaError::UnsupportedParams { params, .. } if params == vec!["count"]
-    ));
-}
-
-#[tokio::test]
-async fn provider_model_direct_routing_uses_provider_model_param_rules() {
-    let server = MockServer::start().await;
-    mount_chat_response(&server, "http.execute", "ok").await;
-    let client = client_with_chat_params(
-        "p-direct-model-rules",
-        &server,
-        Value::Null,
-        ChatParamConfig {
-            models: BTreeMap::from([(
-                ModelName::from("direct-model"),
-                ChatParamModelConfig {
-                    allow: vec!["count".to_string()],
-                    ..ChatParamModelConfig::default()
-                },
-            )]),
-            ..ChatParamConfig::default()
-        },
-    );
-
-    let mut request = request(ModelRef::provider_model(
-        ProviderId::from("p-direct-model-rules"),
-        "direct-model",
-    ));
-    request.params.count = Some(2);
-    client.chat().create(&request).await.unwrap();
-
-    let body = last_body(&server).await;
-    assert_eq!(body["model"], "direct-model");
-    assert_eq!(body["count"], 2);
-}
-
-#[tokio::test]
 async fn create_applies_selected_provider_options_after_adapter_mapping() {
     let server = MockServer::start().await;
     let provider_id = "zhipu";
     mount_chat_response(&server, "http.execute", "ok").await;
-    let client = client(
-        provider_id,
-        &server,
-        Value::Null,
-        ParamPolicy::RejectUnsupported,
-    );
+    let client = client(provider_id, &server, Value::Null);
     let mut request = request(ModelRef::model("gpt-public"));
     request.params.temperature = Some(0.2);
     let mut overrides = ChatParameterMap::new();
@@ -1222,12 +924,7 @@ async fn create_ignores_provider_options_for_non_selected_provider() {
     let server = MockServer::start().await;
     let provider_id = "selected-provider";
     mount_chat_response(&server, "http.execute", "ok").await;
-    let client = client(
-        provider_id,
-        &server,
-        Value::Null,
-        ParamPolicy::RejectUnsupported,
-    );
+    let client = client(provider_id, &server, Value::Null);
     let mut request = request(ModelRef::model("gpt-public"));
     request.params.temperature = Some(0.2);
     let mut overrides = ChatParameterMap::new();
@@ -1249,12 +946,7 @@ async fn create_keeps_provider_body_structured_for_provider_options() {
     let server = MockServer::start().await;
     let provider_id = "p-structured-body";
     mount_chat_response(&server, "http.execute", "ok").await;
-    let client = client(
-        provider_id,
-        &server,
-        Value::Null,
-        ParamPolicy::RejectUnsupported,
-    );
+    let client = client(provider_id, &server, Value::Null);
     let mut request = request(ModelRef::model("gpt-public"));
     let mut overrides = ChatParameterMap::new();
     overrides.insert("provider_native".to_string(), json!(true));
@@ -1273,12 +965,7 @@ async fn create_keeps_provider_body_structured_for_provider_options() {
 async fn create_lets_adapter_transform_developer_messages_in_request_body() {
     let server = MockServer::start().await;
     mount_chat_response(&server, "http.execute", "ok").await;
-    let client = client(
-        "p-developer",
-        &server,
-        Value::Null,
-        ParamPolicy::RejectUnsupported,
-    );
+    let client = client("p-developer", &server, Value::Null);
 
     let request = ChatRequest::new(
         ModelRef::model("gpt-public"),
@@ -1306,12 +993,7 @@ async fn create_stream_provider_options_can_override_injected_stream_param() {
         stream_chunk_bytes("provider-gpt", "chunk"),
     )
     .await;
-    let client = client(
-        provider_id,
-        &server,
-        Value::Null,
-        ParamPolicy::RejectUnsupported,
-    );
+    let client = client(provider_id, &server, Value::Null);
     let mut request = request(ModelRef::model("gpt-public"));
     let mut overrides = ChatParameterMap::new();
     overrides.insert("stream".to_string(), json!(false));
@@ -1335,12 +1017,7 @@ async fn create_stream_injects_stream_param_for_native_streams() {
         stream_chunk_bytes("provider-gpt", "chunk"),
     )
     .await;
-    let client = client(
-        provider_id,
-        &server,
-        Value::Null,
-        ParamPolicy::RejectUnsupported,
-    );
+    let client = client(provider_id, &server, Value::Null);
 
     let mut stream = client
         .chat()
@@ -1370,7 +1047,6 @@ async fn create_stream_uses_adapter_stream_transform_for_provider_bytes() {
         "p-stream-transform",
         &server,
         json!({"stream_transform": "raw_text"}),
-        ParamPolicy::RejectUnsupported,
     );
 
     let mut stream = client
@@ -1391,12 +1067,7 @@ async fn create_stream_native_lets_adapter_transform_non_success_status_into_bus
     let server = MockServer::start().await;
     let provider_id = "p-stream-native-error";
     mount_error_response(&server, "http.stream").await;
-    let client = client(
-        provider_id,
-        &server,
-        Value::Null,
-        ParamPolicy::RejectUnsupported,
-    );
+    let client = client(provider_id, &server, Value::Null);
 
     let err = match client
         .chat()

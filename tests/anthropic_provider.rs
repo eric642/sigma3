@@ -12,9 +12,9 @@ use sigma::types::shared::{
     FunctionName, FunctionObject, ImageUrl, ReasoningEffort, ResponseFormat,
 };
 use sigma::{
-    ChatParamConfig, ChatParameterMap, Client, ClientConfig, ModelDeploymentConfig, ModelName,
-    ModelRef, ProviderCatalog, ProviderCommonConfig, ProviderConfigMap, ProviderId,
-    ProviderInstanceConfig, ProviderKind, SecretString, SigmaError,
+    ChatParameterMap, Client, ClientConfig, ModelDeploymentConfig, ModelName, ModelRef,
+    ProviderCatalog, ProviderCommonConfig, ProviderConfigMap, ProviderId, ProviderInstanceConfig,
+    ProviderKind, SecretString, SigmaError,
 };
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request as WiremockRequest, ResponseTemplate};
@@ -34,7 +34,6 @@ fn anthropic_config(
                 api_base: api_base.into(),
                 api_key: api_key.into(),
                 headers,
-                chat_params: ChatParamConfig::default(),
             },
             config: provider_config_map(provider_config),
         }],

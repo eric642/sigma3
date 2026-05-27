@@ -85,14 +85,14 @@ pub enum ParamPolicy {
     DropUnsupported,
 }
 
-/// Provider-level chat parameter handling rules.
+/// OpenAI-compatible chat parameter handling rules.
 ///
-/// These rules are applied by sigma after deployment defaults and request
-/// parameters are merged, but before provider request transformation. They let
-/// one configured provider instance describe which
-/// OpenAI-compatible parameters it accepts, which extra parameters are allowed,
-/// which parameters should be removed, and which top-level fields should be
-/// renamed before reaching the provider adapter.
+/// These rules are applied by the OpenAI-compatible provider after deployment
+/// defaults and request parameters are merged, but before the
+/// OpenAI-compatible HTTP body is built. They let one configured compatible
+/// provider instance describe which OpenAI-compatible parameters it accepts,
+/// which extra parameters are allowed, which parameters should be removed, and
+/// which top-level fields should be renamed before reaching the target service.
 ///
 /// Model-specific entries in [`ChatParamConfig::models`] are matched against
 /// the routed provider-native model name, not the public model name. This keeps
@@ -145,7 +145,7 @@ pub struct ChatParamConfig {
     pub models: BTreeMap<ModelName, ChatParamModelConfig>,
 }
 
-/// Provider-native model-specific chat parameter handling rules.
+/// OpenAI-compatible model-specific chat parameter handling rules.
 ///
 /// This has the same behavior as [`ChatParamConfig`] except it cannot contain
 /// nested model rules. `supported` and `rename` use `Option` so a model can
@@ -169,13 +169,13 @@ pub struct ChatParamModelConfig {
     pub rename: Option<BTreeMap<String, String>>,
 }
 
-/// Common configuration fields available to every provider instance.
+/// Common runtime configuration fields available to every provider instance.
 ///
 /// These fields cover the endpoint, credentials, and static HTTP headers used
 /// by most providers. They are serialized at the top level of
 /// [`ProviderInstanceConfig`] with Serde `flatten`, so JSON, TOML, and YAML
-/// configuration files use `api_base`, `api_key`, `headers`, and
-/// `chat_params` beside `id` and `kind`. Provider-specific settings belong in
+/// configuration files use `api_base`, `api_key`, and `headers` beside `id`
+/// and `kind`. Provider-specific settings belong in
 /// [`ProviderInstanceConfig::config`].
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ProviderCommonConfig {
@@ -199,14 +199,6 @@ pub struct ProviderCommonConfig {
     /// syntax can vary by protocol.
     #[serde(default)]
     pub headers: HashMap<String, String>,
-    /// Chat parameter handling rules for this provider instance.
-    ///
-    /// These common rules are interpreted by sigma's standard chat pipeline
-    /// before the provider adapter builds the HTTP request. Custom chat
-    /// providers that bypass the standard adapter are responsible for applying
-    /// any equivalent behavior themselves.
-    #[serde(default)]
-    pub chat_params: ChatParamConfig,
 }
 
 /// Configuration for one initialized provider instance.
@@ -234,9 +226,9 @@ pub struct ProviderInstanceConfig {
     /// Provider crates should define a typed config struct and register it with
     /// [`crate::submit_provider!`]. sigma uses that type both to deserialize
     /// this object before invoking the constructor and to generate provider
-    /// configuration schemas. Common chat parameter support, dropping,
-    /// allowing, and renaming rules belong in
-    /// [`ProviderCommonConfig::chat_params`].
+    /// configuration schemas. OpenAI-compatible chat parameter support,
+    /// dropping, allowing, and renaming rules belong in
+    /// [`crate::OpenAiCompatibleConfig::chat_params`].
     #[serde(default)]
     pub config: ProviderConfigMap,
 }

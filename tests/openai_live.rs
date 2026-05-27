@@ -17,7 +17,7 @@ use sigma::types::chat::{
 };
 use sigma::types::shared::{FunctionName, FunctionObject, ResponseFormat};
 use sigma::{
-    ChatParamConfig, ChatStream, Client, ClientConfig, ModelDeploymentConfig, ModelName, ModelRef,
+    ChatStream, Client, ClientConfig, ModelDeploymentConfig, ModelName, ModelRef,
     ProviderCommonConfig, ProviderConfigMap, ProviderId, ProviderInstanceConfig, ProviderKind,
     SecretString, SigmaError, SigmaResult,
 };
@@ -165,7 +165,6 @@ fn live_client_config(config: &LiveOpenAiConfig) -> ClientConfig {
                 api_base: config.api_base.clone(),
                 api_key: Some(SecretString::from(config.api_key.clone())),
                 headers: HashMap::new(),
-                chat_params: ChatParamConfig::default(),
             },
             config: ProviderConfigMap::new(),
         }],
