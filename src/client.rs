@@ -5,8 +5,8 @@ use futures_util::StreamExt;
 
 use crate::config::{ChatParamConfig, ClientConfig};
 use crate::provider::{
-    ChatAdapterContext, ChatAdapterRequest, ChatStream, ProviderCatalog, ProviderInit, StreamMode,
-    deployment_model_info, response_to_stream_chunk,
+    ChatAdapterContext, ChatAdapterRequest, ChatStream, ProviderCatalog, ProviderInit,
+    deployment_model_info,
 };
 use crate::types::chat::{ChatRequest, ChatResponse};
 use crate::{
@@ -211,9 +211,10 @@ impl ChatNamespace<'_> {
 
     /// Creates a streaming chat completion.
     ///
-    /// The provider adapter's [`crate::StreamBehavior`] controls whether sigma
-    /// injects `"stream": true`, uses the HTTP stream path, or produces a
-    /// fake one-item stream from a non-streaming response.
+    /// The call resolves [`ChatRequest::model`] through deployment routing,
+    /// prepares the provider request with streaming enabled, sends it through
+    /// the shared HTTP streaming path, and forwards provider bytes to the
+    /// adapter's stream decoder.
     ///
     /// # Errors
     ///
@@ -250,7 +251,7 @@ impl Client {
                 provider: provider.id().clone(),
             })?;
         let (signed_request, adapter, context) =
-            self.prepare_provider_request(request, &route, adapter, None)?;
+            self.prepare_provider_request(request, &route, adapter, false)?;
         let response = self.execute_http(signed_request).await?;
 
         transform_response_or_error(adapter, &context, response)
@@ -274,17 +275,8 @@ impl Client {
             .ok_or_else(|| SigmaError::ProviderDoesNotSupportChat {
                 provider: provider.id().clone(),
             })?;
-        let stream_behavior = adapter.stream_behavior();
         let (signed_request, adapter, context) =
-            self.prepare_provider_request(request, &route, adapter, Some(stream_behavior))?;
-
-        if stream_behavior.mode == StreamMode::FakeFromResponse {
-            let response = self.execute_http(signed_request).await?;
-            let response = transform_response_or_error(adapter, &context, response)?;
-            return Ok(Box::pin(futures_util::stream::once(async move {
-                Ok(response_to_stream_chunk(response))
-            })));
-        }
+            self.prepare_provider_request(request, &route, adapter, true)?;
 
         let byte_stream = self.stream_http(signed_request, adapter, &context).await?;
         adapter.transform_stream(&context, byte_stream)
@@ -341,7 +333,7 @@ impl Client {
         request: &'a ChatRequest,
         route: &'a ResolvedRoute,
         adapter: &'a dyn crate::ChatCompletionAdapter,
-        stream_behavior: Option<crate::StreamBehavior>,
+        streaming: bool,
     ) -> SigmaResult<(
         crate::SignedProviderRequest,
         &'a dyn crate::ChatCompletionAdapter,
@@ -356,7 +348,7 @@ impl Client {
                 .as_ref()
                 .map(|deployment| &deployment.defaults),
             chat_param_config: self.inner.provider_chat_params.get(context.provider),
-            streaming: stream_behavior.is_some_and(|behavior| behavior.mode == StreamMode::Native),
+            streaming,
         };
 
         let endpoint = adapter.endpoint(&adapter_request)?;

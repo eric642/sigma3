@@ -5,7 +5,7 @@
 //! that owns the canonical build pipeline:
 //!
 //! 1. Merge deployment defaults with the request's typed chat parameters,
-//!    optionally injecting the streaming flag.
+//!    injecting the streaming flag for `create_stream` calls.
 //! 2. Resolve and apply caller-configured chat parameter rules
 //!    (drop / unsupported policy / rename / nested drop).
 //! 3. Apply sigma's canonical semantic-to-OpenAI field mapping.
@@ -61,12 +61,6 @@ pub(crate) trait OpenAiChatBodyBuilder {
     /// Built-in chat parameter support set for this adapter.
     fn default_supported_chat_params(&self) -> &'static [&'static str];
 
-    /// Whether this adapter wants the `"stream": true` body field injected
-    /// before chat parameter rule validation when sigma intends to stream.
-    fn inject_stream_flag(&self) -> bool {
-        true
-    }
-
     /// Final body mutation hook applied AFTER the OpenAI-ready body has been
     /// assembled, including provider option merge. Default: identity.
     fn post_process_body(
@@ -85,8 +79,7 @@ pub(crate) trait OpenAiChatBodyBuilder {
         deployment_defaults: Option<&ChatParameterMap>,
         chat_param_config: Option<&ChatParamConfig>,
     ) -> SigmaResult<Value> {
-        let inject_stream = ctx.streaming && self.inject_stream_flag();
-        let mut params = merge_chat_params(deployment_defaults, request, inject_stream)?;
+        let mut params = merge_chat_params(deployment_defaults, request, ctx.streaming)?;
 
         let rules = resolve_chat_param_rules(
             self.default_supported_chat_params(),

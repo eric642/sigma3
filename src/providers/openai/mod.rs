@@ -12,7 +12,7 @@ use crate::types::chat::ChatResponse;
 use crate::{
     ChatAdapterContext, ChatAdapterRequest, ChatCompletionAdapter, ChatStream, ProviderDriver,
     ProviderId, ProviderInit, ProviderKind, ProviderKindStatic, SigmaError, SigmaResult,
-    StreamBehavior, submit_provider,
+    submit_provider,
 };
 
 mod base;
@@ -245,10 +245,6 @@ impl ChatCompletionAdapter for OpenAiChatAdapter {
             stream,
             self.flavor,
         )))
-    }
-
-    fn stream_behavior(&self) -> StreamBehavior {
-        StreamBehavior::native(true)
     }
 }
 

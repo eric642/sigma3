@@ -18,7 +18,7 @@ use sigma::{
     ModelDeploymentConfig, ModelName, ModelRef, ParamPolicy, ProviderByteStream, ProviderCatalog,
     ProviderCommonConfig, ProviderConfigMap, ProviderDriver, ProviderEndpoint, ProviderId,
     ProviderInit, ProviderInstanceConfig, ProviderKind, ProviderKindStatic, ProviderRequest,
-    ProviderResponse, SecretString, SigmaError, SigmaResult, SignedProviderRequest, StreamBehavior,
+    ProviderResponse, SecretString, SigmaError, SigmaResult, SignedProviderRequest,
     apply_chat_param_rules, merge_chat_params, provider_registration, resolve_chat_param_rules,
     submit_provider,
 };
@@ -57,8 +57,6 @@ struct FakeProvider {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 struct FakeProviderConfig {
-    #[serde(default = "default_stream_behavior")]
-    stream_behavior: String,
     #[serde(default = "default_stream_transform")]
     stream_transform: String,
 }
@@ -66,14 +64,9 @@ struct FakeProviderConfig {
 impl Default for FakeProviderConfig {
     fn default() -> Self {
         Self {
-            stream_behavior: default_stream_behavior(),
             stream_transform: default_stream_transform(),
         }
     }
-}
-
-fn default_stream_behavior() -> String {
-    "native".to_string()
 }
 
 fn default_stream_transform() -> String {
@@ -92,18 +85,12 @@ impl FakeProvider {
             })?;
         let config = init.config;
 
-        let stream_behavior = match config.stream_behavior.as_str() {
-            "fake" => StreamBehavior::fake_from_response(),
-            _ => StreamBehavior::native(true),
-        };
-
         Ok(Arc::new(Self {
             id: init.id.clone(),
             kind: init.kind,
             chat: FakeChatAdapter {
                 id: init.id,
                 base_url,
-                stream_behavior,
                 stream_transform: FakeStreamTransform::from_config(&config.stream_transform),
             },
         }))
@@ -133,7 +120,6 @@ submit_provider! {
 struct FakeChatAdapter {
     id: ProviderId,
     base_url: String,
-    stream_behavior: StreamBehavior,
     stream_transform: FakeStreamTransform,
 }
 
@@ -235,9 +221,11 @@ impl ChatCompletionAdapter for FakeChatAdapter {
         endpoint: ProviderEndpoint,
     ) -> SigmaResult<ProviderRequest> {
         push_event(&self.id, "transform_request");
-        let inject_stream = request.streaming && self.stream_behavior().inject_stream;
-        let mut params =
-            merge_chat_params(request.deployment_defaults, request.request, inject_stream)?;
+        let mut params = merge_chat_params(
+            request.deployment_defaults,
+            request.request,
+            request.streaming,
+        )?;
         let rules = resolve_chat_param_rules(
             FAKE_SUPPORTED_CHAT_PARAMS,
             request.chat_param_config,
@@ -349,10 +337,6 @@ impl ChatCompletionAdapter for FakeChatAdapter {
             }))),
         }
     }
-
-    fn stream_behavior(&self) -> StreamBehavior {
-        self.stream_behavior
-    }
 }
 
 fn provider_from_request(request: &WiremockRequest) -> ProviderId {
@@ -413,10 +397,6 @@ async fn mount_error_response(server: &MockServer, event: &'static str) {
 async fn last_body(server: &MockServer) -> Value {
     let requests = server.received_requests().await.unwrap();
     requests.last().unwrap().body_json().unwrap()
-}
-
-async fn request_count(server: &MockServer) -> usize {
-    server.received_requests().await.unwrap().len()
 }
 
 fn response_body(model: &str, content: &str) -> Value {
@@ -552,7 +532,7 @@ fn assert_provider_config_from_serde(config: &ClientConfig) {
         provider.common.headers.get("X-Test").map(String::as_str),
         Some("yes")
     );
-    assert_eq!(provider.config["stream_behavior"], "fake");
+    assert_eq!(provider.config["stream_transform"], "raw_text");
 }
 
 #[test]
@@ -564,7 +544,7 @@ fn client_config_deserializes_nested_provider_config_from_serde_formats() {
             "api_base": "http://localhost:8080/v1",
             "api_key": "sk-test",
             "headers": { "X-Test": "yes" },
-            "config": { "stream_behavior": "fake" }
+            "config": { "stream_transform": "raw_text" }
         }]
     }"#;
     let toml_config = r#"
@@ -578,7 +558,7 @@ fn client_config_deserializes_nested_provider_config_from_serde_formats() {
         X-Test = "yes"
 
         [providers.config]
-        stream_behavior = "fake"
+        stream_transform = "raw_text"
     "#;
     let yaml_config = r#"
 providers:
@@ -589,7 +569,7 @@ providers:
     headers:
       X-Test: "yes"
     config:
-      stream_behavior: fake
+      stream_transform: raw_text
 "#;
 
     assert_provider_config_from_serde(&serde_json::from_str(json_config).unwrap());
@@ -1378,86 +1358,6 @@ async fn create_stream_injects_stream_param_for_native_streams() {
             "sign_request",
             "http.stream",
             "transform_stream",
-        ]
-    );
-}
-
-#[tokio::test]
-async fn create_stream_can_fake_stream_from_non_stream_response() {
-    let server = MockServer::start().await;
-    let provider_id = "p-stream-fake";
-    mount_chat_response(&server, "http.execute", "ok").await;
-    let client = client(
-        provider_id,
-        &server,
-        json!({"stream_behavior": "fake"}),
-        ParamPolicy::RejectUnsupported,
-    );
-
-    let mut stream = client
-        .chat()
-        .create_stream(&request(ModelRef::model("gpt-public")))
-        .await
-        .unwrap();
-    let chunk = stream.next().await.unwrap().unwrap();
-
-    assert_eq!(chunk.choices[0].delta.content.as_deref(), Some("ok"));
-    assert_eq!(request_count(&server).await, 1);
-    assert_eq!(
-        take_events(provider_id),
-        vec![
-            "endpoint",
-            "transform_request",
-            "sign_request",
-            "http.execute",
-            "transform_response",
-        ]
-    );
-}
-
-#[tokio::test]
-async fn create_stream_fake_lets_adapter_transform_non_success_status_into_business_error() {
-    let server = MockServer::start().await;
-    let provider_id = "p-stream-fake-error";
-    mount_error_response(&server, "http.execute").await;
-    let client = client(
-        provider_id,
-        &server,
-        json!({"stream_behavior": "fake"}),
-        ParamPolicy::RejectUnsupported,
-    );
-
-    let err = match client
-        .chat()
-        .create_stream(&request(ModelRef::model("gpt-public")))
-        .await
-    {
-        Ok(_) => panic!("expected provider business error"),
-        Err(err) => err,
-    };
-
-    assert!(matches!(
-        err,
-        SigmaError::ProviderBusiness {
-            provider,
-            status,
-            code: Some(code),
-            message,
-            details: Some(details),
-        } if provider == provider_id
-            && status == StatusCode::TOO_MANY_REQUESTS
-            && code == "rate_limit"
-            && message == "too many requests"
-            && details == json!({"retry_after": 60})
-    ));
-    assert_eq!(
-        take_events(provider_id),
-        vec![
-            "endpoint",
-            "transform_request",
-            "sign_request",
-            "http.execute",
-            "transform_error_response",
         ]
     );
 }

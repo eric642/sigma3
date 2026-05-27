@@ -16,9 +16,7 @@ use crate::provider_http::{
     ProviderByteStream, ProviderEndpoint, ProviderRequest, ProviderResponse, ProviderState,
     SignedProviderRequest,
 };
-use crate::types::chat::{
-    AssistantDelta, ChatRequest, ChatResponse, ChatStreamChoice, ChatStreamChunk,
-};
+use crate::types::chat::{ChatRequest, ChatResponse, ChatStreamChunk};
 use crate::{
     DeploymentId, ModelDeploymentConfig, ModelName, ProviderId, ProviderKind, ProviderKindStatic,
     SigmaError, SigmaResult,
@@ -545,16 +543,11 @@ pub struct ChatAdapterRequest<'a> {
     /// shared chat parameter pipeline inside `transform_request`. `None`
     /// when the provider was configured without a `chat_params` block.
     pub chat_param_config: Option<&'a crate::config::ChatParamConfig>,
-    /// Whether sigma will issue this provider HTTP call as a native stream.
+    /// Whether the caller invoked `create_stream`.
     ///
-    /// `true` only when the adapter's
-    /// [`StreamBehavior::mode`](crate::StreamBehavior) is
-    /// [`StreamMode::Native`](crate::StreamMode) and the caller invoked
-    /// `create_stream`. Adapters use this to select streaming endpoints
-    /// (e.g. Gemini's `streamGenerateContent`) and to inject the `stream`
-    /// body field. `create_stream` calls that resolve to
-    /// [`StreamMode::FakeFromResponse`](crate::StreamMode) leave this `false`
-    /// so the underlying HTTP request stays non-streaming.
+    /// Adapters use this to select streaming endpoints (for example Gemini's
+    /// `streamGenerateContent`) and to inject provider-native streaming request
+    /// fields such as `"stream": true`.
     pub streaming: bool,
 }
 
@@ -568,63 +561,6 @@ pub struct ChatAdapterRequest<'a> {
 /// [`ChatCompletionAdapter::transform_stream`] and sigma forwards them
 /// unchanged through [`crate::Client::chat`].
 pub type ChatStream = Pin<Box<dyn Stream<Item = SigmaResult<ChatStreamChunk>> + Send + 'static>>;
-
-/// Streaming strategy used by a chat adapter.
-///
-/// Adapters report this through [`ChatCompletionAdapter::stream_behavior`].
-/// `Native` is the default for providers that expose a streaming HTTP endpoint
-/// (OpenAI SSE, Anthropic SSE, Bedrock event-stream, Gemini SSE).
-/// `FakeFromResponse` lets providers without a streaming endpoint still satisfy
-/// `client.chat().create_stream(...)` callers by issuing the non-streaming
-/// request and emitting the full response as a single chunk.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StreamMode {
-    /// Use the HTTP streaming path and let the adapter transform provider bytes.
-    Native,
-    /// Use a non-streaming provider response and emit one synthesized chunk.
-    FakeFromResponse,
-}
-
-/// Controls how sigma prepares and executes streaming requests.
-///
-/// Adapters return this from [`ChatCompletionAdapter::stream_behavior`].
-/// `mode` selects the execution path. `inject_stream` is a hint for
-/// adapter-internal request building: set this to `true` when the adapter
-/// should add a literal `stream: true` body field before chat parameter rule
-/// validation, and to `false` when the adapter manages the streaming flag
-/// itself or the field would be rejected by the upstream API.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StreamBehavior {
-    /// Stream execution mode.
-    pub mode: StreamMode,
-    /// Whether the adapter should add `"stream": true` before parameter
-    /// mapping.
-    pub inject_stream: bool,
-}
-
-impl StreamBehavior {
-    /// Uses the HTTP streaming path.
-    pub const fn native(inject_stream: bool) -> Self {
-        Self {
-            mode: StreamMode::Native,
-            inject_stream,
-        }
-    }
-
-    /// Uses `execute` and converts the full response into a one-item stream.
-    pub const fn fake_from_response() -> Self {
-        Self {
-            mode: StreamMode::FakeFromResponse,
-            inject_stream: false,
-        }
-    }
-}
-
-impl Default for StreamBehavior {
-    fn default() -> Self {
-        Self::native(true)
-    }
-}
 
 /// Provider adapter for the generic chat HTTP pipeline.
 ///
@@ -641,12 +577,10 @@ impl Default for StreamBehavior {
 ///    [`ChatCompletionAdapter::transform_error_response`]
 /// 6. success responses use [`ChatCompletionAdapter::transform_response`]
 ///
-/// `create_stream` follows the same preparation path. Native streams use
+/// `create_stream` follows the same preparation path. Streams use
 /// [`ChatCompletionAdapter::transform_error_response`] for non-success HTTP
 /// statuses or [`ChatCompletionAdapter::transform_stream`] to convert
-/// successful provider bytes into semantic chat chunks. Fake streams use
-/// [`ChatCompletionAdapter::transform_response`] and synthesize one chunk from
-/// the full success response.
+/// successful provider bytes into semantic chat chunks.
 pub trait ChatCompletionAdapter: Send + Sync {
     /// Selects the provider endpoint for a prepared chat request.
     fn endpoint(&self, request: &ChatAdapterRequest<'_>) -> SigmaResult<ProviderEndpoint>;
@@ -726,40 +660,6 @@ pub trait ChatCompletionAdapter: Send + Sync {
         context: &ChatAdapterContext<'_>,
         stream: ProviderByteStream,
     ) -> SigmaResult<ChatStream>;
-
-    /// Returns streaming behavior for this adapter.
-    fn stream_behavior(&self) -> StreamBehavior {
-        StreamBehavior::default()
-    }
-}
-
-pub(crate) fn response_to_stream_chunk(response: ChatResponse) -> ChatStreamChunk {
-    let choices = response
-        .choices
-        .into_iter()
-        .map(|choice| ChatStreamChoice {
-            index: choice.index,
-            delta: AssistantDelta {
-                content: choice.message.content,
-                reasoning: choice.message.reasoning,
-                tool_calls: None,
-                role: Some(choice.message.role),
-                refusal: choice.message.refusal,
-            },
-            finish_reason: choice.finish_reason,
-            logprobs: choice.logprobs,
-        })
-        .collect();
-
-    ChatStreamChunk {
-        id: response.id,
-        choices,
-        created: response.created,
-        model: response.model,
-        service_tier: response.service_tier,
-        object: "chat.completion.chunk".to_string(),
-        usage: response.usage,
-    }
 }
 
 pub(crate) fn deployment_model_info(deployment: Option<&ModelDeploymentConfig>) -> Option<&Value> {

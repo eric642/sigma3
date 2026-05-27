@@ -88,10 +88,7 @@ impl ResolvedChatParamRules {
 ///
 /// `inject_stream` adds `"stream": true` to the merged map before any rule
 /// application so the streaming flag participates in unsupported-parameter
-/// validation. Adapters whose [`StreamBehavior::inject_stream`] is `false`
-/// pass `false` here and inject the flag elsewhere if needed.
-///
-/// [`StreamBehavior::inject_stream`]: crate::StreamBehavior::inject_stream
+/// validation.
 pub fn merge_chat_params(
     deployment_defaults: Option<&ChatParameterMap>,
     request: &ChatRequest,

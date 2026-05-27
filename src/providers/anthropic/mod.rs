@@ -19,7 +19,7 @@ use crate::types::chat::ChatResponse;
 use crate::{
     ChatAdapterContext, ChatAdapterRequest, ChatCompletionAdapter, ChatStream, ProviderDriver,
     ProviderId, ProviderInit, ProviderKind, ProviderKindStatic, SigmaError, SigmaResult,
-    StreamBehavior, submit_provider,
+    submit_provider,
 };
 
 mod config;
@@ -170,9 +170,11 @@ impl ChatCompletionAdapter for AnthropicChatAdapter {
     ) -> SigmaResult<ProviderRequest> {
         reject_custom_tool_calls(&self.provider, &request.request.messages)?;
         let provider_options = request.request.provider_options.get(&self.provider);
-        let inject_stream = request.streaming && self.stream_behavior().inject_stream;
-        let mut params =
-            merge_chat_params(request.deployment_defaults, request.request, inject_stream)?;
+        let mut params = merge_chat_params(
+            request.deployment_defaults,
+            request.request,
+            request.streaming,
+        )?;
         let rules = resolve_chat_param_rules(
             SUPPORTED_CHAT_PARAMS,
             request.chat_param_config,
@@ -339,10 +341,6 @@ impl ChatCompletionAdapter for AnthropicChatAdapter {
             reverse_tool_map(context),
             response_format_fallback(context),
         )))
-    }
-
-    fn stream_behavior(&self) -> StreamBehavior {
-        StreamBehavior::native(true)
     }
 }
 
