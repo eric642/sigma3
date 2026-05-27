@@ -34,6 +34,14 @@ const GEMINI_KIND: ProviderKindStatic = ProviderKindStatic::new("gemini");
 const GEMINI_DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com";
 const GEMINI_API_KEY_HEADER: &str = "x-goog-api-key";
 
+/// Semantic chat parameters this adapter exposes through the Gemini API.
+///
+/// `parallel_tool_calls` is intentionally absent: Gemini's `generateContent`
+/// endpoint does not expose a per-request parallel tool calling toggle, and
+/// silently dropping it previously hid configuration mistakes. Callers that
+/// still want to forward it explicitly can opt in via
+/// [`crate::ChatParamConfig::allow`] or
+/// [`crate::types::chat::ChatRequest::provider_options`].
 const SUPPORTED_GEMINI_CHAT_PARAMS: &[&str] = &[
     "audio_output",
     "count",
@@ -42,7 +50,6 @@ const SUPPORTED_GEMINI_CHAT_PARAMS: &[&str] = &[
     "max_completion_tokens",
     "max_tokens",
     "output_modalities",
-    "parallel_tool_calls",
     "presence_penalty",
     "reasoning_effort",
     "response_format",

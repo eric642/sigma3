@@ -10,16 +10,19 @@ use crate::types::chat::{
 use crate::types::shared::{CompletionTokensDetails, FunctionCall, PromptTokensDetails};
 use crate::{ChatAdapterContext, SigmaError, SigmaResult};
 
+use crate::providers::common::current_unix_timestamp;
+
+use super::RESPONSE_FORMAT_TOOL_NAME;
 use super::error::error_from_body;
 use super::request::provider_context_block;
-use super::state::{current_unix_timestamp, reverse_tool_map};
+use super::state::{response_format_fallback, reverse_tool_map};
 
 pub(super) fn anthropic_response_to_chat(
     context: &ChatAdapterContext<'_>,
     body: Value,
 ) -> SigmaResult<ChatResponse> {
     if body.get("error").is_some() {
-        return Err(error_from_body(context, StatusCode::OK, body));
+        return Err(error_from_body(context, StatusCode::OK, body, None));
     }
     let content = body
         .get("content")
@@ -29,12 +32,14 @@ pub(super) fn anthropic_response_to_chat(
             message: "anthropic response missing content array".to_string(),
         })?;
     let reverse_map = reverse_tool_map(context);
+    let response_format_fallback_active = response_format_fallback(context);
     let mut text = String::new();
     let mut tool_calls = Vec::new();
     let mut reasoning_blocks = Vec::new();
     let mut reasoning_content = String::new();
     let mut annotations = Vec::new();
     let mut provider_context = Vec::new();
+    let mut response_format_fallback_hit = false;
 
     for (index, block) in content.iter().enumerate() {
         match block.get("type").and_then(Value::as_str) {
@@ -43,6 +48,23 @@ pub(super) fn anthropic_response_to_chat(
                     text.push_str(value);
                 }
                 collect_citations(block, &mut annotations);
+            }
+            Some("tool_use")
+                if response_format_fallback_active
+                    && block.get("name").and_then(Value::as_str)
+                        == Some(RESPONSE_FORMAT_TOOL_NAME) =>
+            {
+                // The synthetic `json_tool_call` is sigma's emulation of
+                // `response_format` for models that do not support native
+                // structured output. Surface its input as response content so
+                // callers see the JSON they asked for instead of a tool call.
+                let input = block
+                    .get("input")
+                    .cloned()
+                    .unwrap_or(Value::Object(Map::new()));
+                let serialized = serde_json::to_string(&input).unwrap_or_else(|_| "{}".to_string());
+                text.push_str(&serialized);
+                response_format_fallback_hit = true;
             }
             Some("tool_use" | "server_tool_use") => {
                 tool_calls.push(tool_use_to_openai(block, index as u32, &reverse_map));
@@ -105,10 +127,18 @@ pub(super) fn anthropic_response_to_chat(
             },
         )
     });
-    let finish_reason = body
+    let raw_finish_reason = body
         .get("stop_reason")
         .and_then(Value::as_str)
         .map(map_finish_reason);
+    let finish_reason = if response_format_fallback_hit {
+        // Force Stop because the only reason Anthropic reported `tool_use` was
+        // the synthetic fallback tool sigma injected; from the caller's
+        // perspective the assistant produced final content.
+        Some(crate::types::chat::FinishReason::Stop)
+    } else {
+        raw_finish_reason
+    };
 
     Ok(ChatResponse {
         id: body

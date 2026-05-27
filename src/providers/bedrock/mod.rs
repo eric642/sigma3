@@ -15,7 +15,9 @@ use crate::config::ChatParameterMap;
 use crate::provider_http::{
     ProviderByteStream, ProviderEndpoint, ProviderRequest, ProviderResponse, SignedProviderRequest,
 };
-use crate::providers::common::{header_map_from_config, parse_response_json};
+use crate::providers::common::{
+    header_map_from_config, parse_response_json, reject_custom_tool_calls,
+};
 use crate::types::chat::ChatResponse;
 use crate::{
     ChatAdapterContext, ChatAdapterRequest, ChatCompletionAdapter, ChatStream, ProviderDriver,
@@ -32,21 +34,27 @@ use config::{
     BedrockAuth, BedrockConfig, resolve_api_base_override, resolve_auth, resolve_configured_region,
     resolve_region,
 };
-use request::{SIGNING_REGION_STATE_KEY, bedrock_request_body, endpoint, provider_state};
+use request::{BedrockState, bedrock_request_body, build_provider_state, endpoint};
 use response::{bedrock_error_response, bedrock_response_to_chat};
 use stream::BedrockConverseStream;
 
 const BEDROCK_KIND: ProviderKindStatic = ProviderKindStatic::new("bedrock");
 const BEDROCK_DEFAULT_REGION: &str = "us-west-2";
 const JSON_TOOL_NAME: &str = "json_tool_call";
-const TOOL_NAME_MAP_STATE_KEY: &str = "bedrock_tool_name_reverse_map";
 
+/// Semantic chat parameters this adapter exposes through the Bedrock Converse API.
+///
+/// `parallel_tool_calls` and `stream_options` are intentionally absent: the
+/// Bedrock Converse API does not expose either control, and silently dropping
+/// them previously hid configuration mistakes. Callers that still need to
+/// experiment with these fields can opt in via
+/// [`crate::ChatParamConfig::allow`] or
+/// [`crate::types::chat::ChatRequest::provider_options`].
 const SUPPORTED_CHAT_PARAMS: &[&str] = &[
     "guardrailConfig",
     "max_completion_tokens",
     "max_tokens",
     "outputConfig",
-    "parallel_tool_calls",
     "performanceConfig",
     "reasoning_effort",
     "requestMetadata",
@@ -54,7 +62,6 @@ const SUPPORTED_CHAT_PARAMS: &[&str] = &[
     "service_tier",
     "stop",
     "stream",
-    "stream_options",
     "temperature",
     "thinking",
     "tool_choice",
@@ -142,6 +149,7 @@ impl ChatCompletionAdapter for BedrockChatAdapter {
         request: ChatAdapterRequest<'_>,
         endpoint: ProviderEndpoint,
     ) -> SigmaResult<ProviderRequest> {
+        reject_custom_tool_calls(&self.provider, request.messages)?;
         let region = self.region_for_model(request.context.provider_model);
         let mut translated = bedrock_request_body(
             &self.provider,
@@ -170,7 +178,10 @@ impl ChatCompletionAdapter for BedrockChatAdapter {
             url: endpoint.url,
             headers,
             body: Value::Object(translated.body),
-            provider_state: Some(provider_state(translated.reverse_tool_map, &region)),
+            provider_state: Some(Arc::new(build_provider_state(
+                translated.reverse_tool_map,
+                &region,
+            )) as crate::ProviderState),
         })
     }
 
@@ -344,9 +355,8 @@ fn signing_region(request: &ProviderRequest) -> Option<String> {
     request
         .provider_state
         .as_ref()
-        .and_then(|state| state.get(SIGNING_REGION_STATE_KEY))
-        .and_then(Value::as_str)
-        .map(str::to_string)
+        .and_then(|state| state.downcast_ref::<BedrockState>())
+        .map(|state| state.signing_region.clone())
 }
 
 fn insert_header_if_missing(headers: &mut HeaderMap, name: HeaderName, value: HeaderValue) {

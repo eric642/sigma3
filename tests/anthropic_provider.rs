@@ -645,6 +645,50 @@ async fn anthropic_create_maps_response_format_reasoning_and_usage() {
 }
 
 #[tokio::test]
+async fn anthropic_response_format_fallback_returns_content_for_json_tool_call() {
+    let server = MockServer::start().await;
+    mount_anthropic_response(
+        &server,
+        anthropic_response(
+            vec![json!({
+                "type": "tool_use",
+                "id": "toolu_json",
+                "name": "json_tool_call",
+                "input": {"answer": true, "items": [1, 2]}
+            })],
+            "tool_use",
+        ),
+    )
+    .await;
+    let client = Client::build(anthropic_config(
+        "anthropic-json-fallback",
+        Some(server.uri()),
+        Some(SecretString::from("sk-ant-test")),
+        HashMap::new(),
+        Value::Null,
+    ))
+    .unwrap();
+    let mut request = request(ModelRef::model("claude-public"));
+    request.params.response_format = Some(ResponseFormat::JsonObject);
+
+    let response = client.chat().create(&request).await.unwrap();
+
+    let content = response.choices[0]
+        .message
+        .content
+        .as_deref()
+        .expect("response_format fallback should surface json_tool_call input as content");
+    let parsed = serde_json::from_str::<Value>(content).expect("content must be valid JSON");
+    assert_eq!(parsed["answer"], true);
+    assert_eq!(parsed["items"], json!([1, 2]));
+    assert!(
+        response.choices[0].message.tool_calls.is_none(),
+        "synthetic json_tool_call must not leak as a tool call"
+    );
+    assert_eq!(response.choices[0].finish_reason, Some(FinishReason::Stop));
+}
+
+#[tokio::test]
 async fn anthropic_create_maps_error_body_to_provider_business_error() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -677,7 +721,7 @@ async fn anthropic_create_maps_error_body_to_provider_business_error() {
 
     assert!(matches!(
         err,
-        SigmaError::ProviderBusiness {
+        SigmaError::RateLimited {
             provider,
             status,
             code: Some(code),
@@ -688,6 +732,117 @@ async fn anthropic_create_maps_error_body_to_provider_business_error() {
             && code == "rate_limit_error"
             && message == "rate limited"
     ));
+}
+
+#[tokio::test]
+async fn anthropic_classifies_authentication_errors() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(StatusCode::UNAUTHORIZED.as_u16()).set_body_json(json!({
+                "type": "error",
+                "error": {
+                    "type": "authentication_error",
+                    "message": "invalid x-api-key"
+                }
+            })),
+        )
+        .mount(&server)
+        .await;
+    let client = Client::build(anthropic_config(
+        "anthropic-auth",
+        Some(server.uri()),
+        Some(SecretString::from("sk-ant-test")),
+        HashMap::new(),
+        Value::Null,
+    ))
+    .unwrap();
+
+    let err = client
+        .chat()
+        .create(&request(ModelRef::model("claude-public")))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        SigmaError::AuthFailed { status, .. } if status == StatusCode::UNAUTHORIZED
+    ));
+}
+
+#[tokio::test]
+async fn anthropic_classifies_context_window_errors() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(StatusCode::BAD_REQUEST.as_u16()).set_body_json(json!({
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "prompt is too long: maximum context length exceeded"
+                }
+            })),
+        )
+        .mount(&server)
+        .await;
+    let client = Client::build(anthropic_config(
+        "anthropic-context",
+        Some(server.uri()),
+        Some(SecretString::from("sk-ant-test")),
+        HashMap::new(),
+        Value::Null,
+    ))
+    .unwrap();
+
+    let err = client
+        .chat()
+        .create(&request(ModelRef::model("claude-public")))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, SigmaError::ContextWindowExceeded { .. }));
+}
+
+#[tokio::test]
+async fn anthropic_stream_overloaded_event_classifies_as_rate_limited() {
+    let server = MockServer::start().await;
+    let body = concat!(
+        "event: error\n",
+        "data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"server is overloaded\"}}\n\n",
+    );
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(body))
+        .mount(&server)
+        .await;
+    let client = Client::build(anthropic_config(
+        "anthropic-stream-error",
+        Some(server.uri()),
+        Some(SecretString::from("sk-ant-test")),
+        HashMap::new(),
+        Value::Null,
+    ))
+    .unwrap();
+
+    let mut stream = client
+        .chat()
+        .create_stream(&request(ModelRef::model("claude-public")))
+        .await
+        .unwrap();
+    let item = stream
+        .next()
+        .await
+        .expect("expected at least one stream item");
+    let err = item.expect_err("overloaded event should produce an error");
+    assert!(
+        matches!(
+            err,
+            SigmaError::RateLimited { ref code, status, .. }
+                if code.as_deref() == Some("overloaded_error")
+                    && status.as_u16() == 529
+        ),
+        "expected RateLimited with status 529, got {err:?}"
+    );
 }
 
 #[tokio::test]
@@ -753,4 +908,66 @@ async fn anthropic_create_stream_parses_text_tool_and_usage_events() {
         8
     );
     assert_eq!(last_body(&server).await["stream"], true);
+}
+
+#[tokio::test]
+async fn anthropic_stream_response_format_fallback_emits_content_for_json_tool_call() {
+    let server = MockServer::start().await;
+    let body = concat!(
+        "event: message_start\n",
+        "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_stream\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-3-5-sonnet-20241022\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n\n",
+        "event: content_block_start\n",
+        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_json\",\"name\":\"json_tool_call\",\"input\":{}}}\n\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"answer\\\":\"}}\n\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"true}\"}}\n\n",
+        "event: message_delta\n",
+        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":4}}\n\n",
+        "event: message_stop\n",
+        "data: {\"type\":\"message_stop\"}\n\n",
+    );
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(body))
+        .mount(&server)
+        .await;
+    let client = Client::build(anthropic_config(
+        "anthropic-json-stream",
+        Some(server.uri()),
+        Some(SecretString::from("sk-ant-test")),
+        HashMap::new(),
+        Value::Null,
+    ))
+    .unwrap();
+    let mut request = request(ModelRef::model("claude-public"));
+    request.params.response_format = Some(ResponseFormat::JsonObject);
+
+    let chunks = client
+        .chat()
+        .create_stream(&request)
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+
+    assert!(
+        chunks
+            .iter()
+            .all(|chunk| chunk.choices[0].delta.tool_calls.is_none()),
+        "json_tool_call must not surface as tool deltas during fallback streaming"
+    );
+    let assembled = chunks
+        .iter()
+        .filter_map(|chunk| chunk.choices[0].delta.content.as_deref())
+        .collect::<String>();
+    let parsed = serde_json::from_str::<Value>(&assembled).expect("assembled content is JSON");
+    assert_eq!(parsed["answer"], true);
+    assert_eq!(
+        chunks.last().unwrap().choices[0].finish_reason,
+        Some(FinishReason::Stop)
+    );
 }

@@ -7,7 +7,7 @@ use futures_core::Stream;
 use serde_json::Value;
 
 use crate::provider_http::ProviderByteStream;
-use crate::providers::common::event_data;
+use crate::providers::common::{SseLineBuffer, event_data};
 use crate::types::chat::{
     Annotation, AssistantDelta, ChatStreamChoice, ChatStreamChunk, FinishReason, ReasoningBlock,
     Role, ToolCallDelta, ToolCallKind, UrlCitation, Usage,
@@ -21,7 +21,7 @@ pub(super) struct GeminiSseStream {
     provider: ProviderId,
     model: ModelName,
     stream: ProviderByteStream,
-    buffer: String,
+    buffer: SseLineBuffer,
     pending: VecDeque<SigmaResult<ChatStreamChunk>>,
     done: bool,
     seen_tool_calls: bool,
@@ -33,7 +33,7 @@ impl GeminiSseStream {
             provider,
             model,
             stream,
-            buffer: String::new(),
+            buffer: SseLineBuffer::new(),
             pending: VecDeque::new(),
             done: false,
             seen_tool_calls: false,
@@ -41,35 +41,23 @@ impl GeminiSseStream {
     }
 
     fn push_chunk(&mut self, chunk: Bytes) {
-        match std::str::from_utf8(&chunk) {
-            Ok(text) => {
-                self.buffer.push_str(&text.replace("\r\n", "\n"));
-                self.drain_buffer(false);
-            }
-            Err(err) => {
-                self.done = true;
-                self.pending.push_back(Err(SigmaError::ProviderResponse {
-                    provider: self.provider.clone(),
-                    message: err.to_string(),
-                }));
-            }
-        }
+        self.buffer.extend(&chunk);
+        self.drain_buffer(false);
     }
 
     fn drain_buffer(&mut self, flush: bool) {
-        while let Some(index) = self.buffer.find("\n\n") {
-            let event = self.buffer[..index].to_string();
-            self.buffer.drain(..index + 2);
+        while let Some(event) = self.buffer.next_event() {
             self.push_event(&event);
             if self.done {
                 return;
             }
         }
 
-        if flush {
-            let event = self.buffer.trim().to_string();
-            self.buffer.clear();
+        if flush && !self.buffer.is_empty() {
+            let event = self.buffer.drain_remaining();
+            let event = event.trim();
             if !event.is_empty() {
+                let event = event.to_string();
                 self.push_event(&event);
             }
         }

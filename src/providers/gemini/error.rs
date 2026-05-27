@@ -1,7 +1,9 @@
 use serde_json::Value;
 
 use crate::provider_http::ProviderResponse;
-use crate::providers::common::fallback_error_message;
+use crate::providers::common::{
+    classify_provider_error, fallback_error_message, parse_retry_after,
+};
 use crate::{ChatAdapterContext, SigmaError};
 
 pub(super) fn gemini_error_response(
@@ -27,6 +29,18 @@ pub(super) fn gemini_error_response(
         .and_then(Value::as_str)
         .map(str::to_string)
         .unwrap_or_else(|| fallback_error_message(response.status, &response.body));
+    let retry_after = parse_retry_after(&response.headers);
+
+    if let Some(err) = classify_provider_error(
+        context.provider,
+        response.status,
+        code.as_deref(),
+        &message,
+        retry_after,
+        body.clone(),
+    ) {
+        return err;
+    }
 
     SigmaError::ProviderBusiness {
         provider: context.provider.to_owned(),

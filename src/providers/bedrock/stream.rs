@@ -8,15 +8,14 @@ use http::StatusCode;
 use serde_json::{Map, Value};
 
 use crate::provider_http::ProviderByteStream;
+use crate::providers::common::current_unix_timestamp;
 use crate::types::chat::{
     AssistantDelta, ChatStreamChoice, ChatStreamChunk, FinishReason, FunctionCallDelta,
     ReasoningBlock, Role, ToolCallDelta, ToolCallKind, Usage,
 };
 use crate::{ProviderId, SigmaError, SigmaResult};
 
-use super::response::{
-    bedrock_usage, business_stream_error, current_unix_timestamp, map_finish_reason, stream_error,
-};
+use super::response::{bedrock_usage, business_stream_error, map_finish_reason, stream_error};
 
 pub(super) struct BedrockConverseStream {
     provider: ProviderId,

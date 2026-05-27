@@ -1,3 +1,10 @@
+// SigmaError carries provider-attribution metadata (provider id, status,
+// optional structured details) on every variant so callers do not have to do a
+// second lookup. The struct is large by design; boxing the inner payload would
+// force unwrap-and-rebind everywhere callers match on it without any
+// performance benefit on the hot path. Document the trade-off here once.
+#![allow(clippy::result_large_err)]
+
 //! sigma - a general-purpose LLM API client.
 //!
 //! sigma separates the user-facing client API from provider-specific driver
@@ -51,6 +58,7 @@ mod client;
 mod config;
 pub mod error;
 mod model;
+pub mod model_capabilities;
 mod provider;
 mod provider_http;
 mod providers;

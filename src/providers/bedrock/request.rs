@@ -4,7 +4,8 @@ use http::Method;
 use serde_json::{Map, Value, json};
 
 use crate::config::ChatParameterMap;
-use crate::providers::common::parse_data_uri;
+use crate::model_capabilities::{VendorFamily, resolve_capabilities};
+use crate::providers::common::{build_tool_name_rewrites, parse_data_uri};
 use crate::types::chat::{
     AssistantContent, AssistantContentPart, CacheControl, CacheControlTtl, ChatMessage,
     FunctionToolCall, ReasoningBlock, TextContent, TextPart, ToolCall, ToolChoice, ToolChoiceMode,
@@ -13,9 +14,7 @@ use crate::types::chat::{
 use crate::types::shared::{FunctionObject, ReasoningEffort, ResponseFormat};
 use crate::{ChatAdapterContext, ModelName, ProviderEndpoint, ProviderId, SigmaError, SigmaResult};
 
-use super::{JSON_TOOL_NAME, TOOL_NAME_MAP_STATE_KEY};
-
-pub(super) const SIGNING_REGION_STATE_KEY: &str = "bedrock_signing_region";
+use super::JSON_TOOL_NAME;
 
 pub(super) struct BedrockRequestBody {
     pub(super) body: Map<String, Value>,
@@ -472,9 +471,6 @@ fn map_params(
         params.insert("tools".to_string(), Value::Array(tools));
         let _ = web_search;
     }
-    params.remove("parallel_tool_calls");
-    params.remove("stream_options");
-
     let (tool_config, reverse_tool_map) = map_tools(
         provider,
         params.remove("tools"),
@@ -549,7 +545,7 @@ fn map_reasoning_effort(
     })?;
     let effort = effort.as_str().unwrap_or("medium");
 
-    if model.as_str().contains("gpt-oss") {
+    if matches!(bedrock_vendor_family(model.as_str()), VendorFamily::GptOss) {
         additional.insert(
             "reasoning_effort".to_string(),
             Value::String(effort.to_string()),
@@ -635,23 +631,34 @@ fn map_tools(
             provider: provider.clone(),
             message: "bedrock tools must be an array".to_string(),
         })?;
-    let mut reverse_tool_map = HashMap::new();
-    let mut bedrock_tools = Vec::new();
+
+    // Two-pass: first decode every function tool and any forced tool_choice so
+    // we can collect their original names, then derive a single set of
+    // collision-free rewrites. The single-pass approach used to alias multiple
+    // distinct names to the same sanitized form.
+    enum ParsedTool {
+        Native(Value),
+        Function(FunctionObject),
+    }
+
+    let mut parsed_tools = Vec::with_capacity(tools.len());
+    let mut original_names = Vec::new();
 
     for tool in tools {
         if is_native_bedrock_tool(&tool) {
-            bedrock_tools.push(tool);
+            parsed_tools.push(ParsedTool::Native(tool));
             continue;
         }
-        let tool = serde_json::from_value::<ToolDefinition>(tool).map_err(|err| {
+        let definition = serde_json::from_value::<ToolDefinition>(tool).map_err(|err| {
             SigmaError::ProviderTransform {
                 provider: provider.clone(),
                 message: err.to_string(),
             }
         })?;
-        match tool {
+        match definition {
             ToolDefinition::Function(tool) => {
-                bedrock_tools.push(tool_spec(tool.function, &mut reverse_tool_map));
+                original_names.push(tool.function.name.clone());
+                parsed_tools.push(ParsedTool::Function(tool.function));
             }
             ToolDefinition::Custom(_) => {
                 return Err(SigmaError::ProviderTransform {
@@ -662,20 +669,69 @@ fn map_tools(
         }
     }
 
+    let parsed_choice = tool_choice
+        .map(|value| -> SigmaResult<ToolChoice> {
+            serde_json::from_value::<ToolChoice>(value).map_err(|err| {
+                SigmaError::ProviderTransform {
+                    provider: provider.clone(),
+                    message: err.to_string(),
+                }
+            })
+        })
+        .transpose()?;
+    if let Some(ToolChoice::Function(choice)) = &parsed_choice
+        && !original_names
+            .iter()
+            .any(|name| name == &choice.function.name)
+    {
+        original_names.push(choice.function.name.clone());
+    }
+    if let Some(ToolChoice::Custom(_)) = &parsed_choice {
+        return Err(SigmaError::ProviderTransform {
+            provider: provider.clone(),
+            message: "bedrock converse provider does not support custom tool choice".to_string(),
+        });
+    }
+
+    let rewrites = build_tool_name_rewrites(&original_names, BEDROCK_TOOL_NAME_MAX_LEN, |name| {
+        bedrock_tool_name(name)
+    });
+
+    let resolved = |name: &str| -> String {
+        rewrites
+            .forward
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| bedrock_tool_name(name))
+    };
+
+    let mut bedrock_tools = Vec::new();
+    for parsed in parsed_tools {
+        match parsed {
+            ParsedTool::Native(tool) => bedrock_tools.push(tool),
+            ParsedTool::Function(function) => {
+                let name = resolved(&function.name);
+                bedrock_tools.push(tool_spec(name, function));
+            }
+        }
+    }
+
     if bedrock_tools.is_empty() {
-        return Ok((None, reverse_tool_map));
+        return Ok((None, rewrites.reverse));
     }
 
     let mut tool_config = Map::new();
     tool_config.insert("tools".to_string(), Value::Array(bedrock_tools));
-    if let Some(tool_choice) = tool_choice
-        && let Some(choice) = bedrock_tool_choice(provider, tool_choice, &mut reverse_tool_map)?
+    if let Some(choice) = parsed_choice
+        && let Some(choice_value) = bedrock_tool_choice_from_parsed(choice, &resolved)
     {
-        tool_config.insert("toolChoice".to_string(), choice);
+        tool_config.insert("toolChoice".to_string(), choice_value);
     }
 
-    Ok((Some(Value::Object(tool_config)), reverse_tool_map))
+    Ok((Some(Value::Object(tool_config)), rewrites.reverse))
 }
+
+const BEDROCK_TOOL_NAME_MAX_LEN: usize = 64;
 
 fn is_native_bedrock_tool(value: &Value) -> bool {
     value.as_object().is_some_and(|object| {
@@ -685,11 +741,7 @@ fn is_native_bedrock_tool(value: &Value) -> bool {
     })
 }
 
-fn tool_spec(function: FunctionObject, reverse_tool_map: &mut HashMap<String, String>) -> Value {
-    let name = bedrock_tool_name(&function.name);
-    if name != function.name {
-        reverse_tool_map.insert(name.clone(), function.name.clone());
-    }
+fn tool_spec(name: String, function: FunctionObject) -> Value {
     let schema = sanitize_schema(
         function
             .parameters
@@ -729,26 +781,16 @@ fn sanitize_schema(value: Value) -> Value {
     }
 }
 
-fn bedrock_tool_choice(
-    provider: &ProviderId,
-    value: Value,
-    reverse_tool_map: &mut HashMap<String, String>,
-) -> SigmaResult<Option<Value>> {
-    let choice = serde_json::from_value::<ToolChoice>(value).map_err(|err| {
-        SigmaError::ProviderTransform {
-            provider: provider.clone(),
-            message: err.to_string(),
-        }
-    })?;
-    Ok(match choice {
+fn bedrock_tool_choice_from_parsed(
+    choice: ToolChoice,
+    resolve: &impl Fn(&str) -> String,
+) -> Option<Value> {
+    match choice {
         ToolChoice::Mode(ToolChoiceMode::Auto) => Some(json!({"auto": {}})),
         ToolChoice::Mode(ToolChoiceMode::Required) => Some(json!({"any": {}})),
         ToolChoice::Mode(ToolChoiceMode::None) => None,
         ToolChoice::Function(choice) => {
-            let name = bedrock_tool_name(&choice.function.name);
-            if name != choice.function.name {
-                reverse_tool_map.insert(name.clone(), choice.function.name);
-            }
+            let name = resolve(&choice.function.name);
             Some(json!({"tool": {"name": name}}))
         }
         ToolChoice::Allowed(choice) => {
@@ -761,14 +803,9 @@ fn bedrock_tool_choice(
                 Some(json!({"auto": {}}))
             }
         }
-        ToolChoice::Custom(_) => {
-            return Err(SigmaError::ProviderTransform {
-                provider: provider.clone(),
-                message: "bedrock converse provider does not support custom tool choice"
-                    .to_string(),
-            });
-        }
-    })
+        // ToolChoice::Custom is rejected up-front in map_tools.
+        ToolChoice::Custom(_) => None,
+    }
 }
 
 fn bedrock_tool_name(input: &str) -> String {
@@ -798,12 +835,18 @@ fn service_tier_block(value: Value) -> Value {
 }
 
 fn is_nova_model(model: &str) -> bool {
-    model.to_ascii_lowercase().contains("nova")
+    matches!(
+        bedrock_vendor_family(model),
+        VendorFamily::Nova | VendorFamily::Nova2
+    )
 }
 
 fn is_nova_2_model(model: &str) -> bool {
-    let model = model.to_ascii_lowercase();
-    model.contains("amazon.nova-2-") || model.contains("nova-2/")
+    matches!(bedrock_vendor_family(model), VendorFamily::Nova2)
+}
+
+fn bedrock_vendor_family(model: &str) -> VendorFamily {
+    resolve_capabilities("bedrock", &ModelName::from(model), None).vendor_family
 }
 
 fn encode_model_id(model: &str) -> String {
@@ -818,24 +861,36 @@ fn encode_model_id(model: &str) -> String {
     encoded
 }
 
-pub(super) fn provider_state(reverse_tool_map: HashMap<String, String>, region: &str) -> Value {
-    let mut state = Map::new();
-    state.insert(
-        SIGNING_REGION_STATE_KEY.to_string(),
-        Value::String(region.to_string()),
-    );
-    if !reverse_tool_map.is_empty() {
-        state.insert(TOOL_NAME_MAP_STATE_KEY.to_string(), json!(reverse_tool_map));
+/// Request-scoped state shared between the Bedrock adapter's request,
+/// signing, response, and stream transforms.
+///
+/// `signing_region` is captured at request time because the Bedrock SigV4 hook
+/// runs after `transform_request` and may need a region different from the
+/// adapter default (for example when the model id is an inference profile ARN
+/// targeting a specific region).
+#[derive(Debug, Default, Clone)]
+pub(super) struct BedrockState {
+    /// Sanitized-to-original tool name map used to restore caller-visible names
+    /// in `toolUse` blocks before sigma builds the public response.
+    pub(super) reverse_tool_map: HashMap<String, String>,
+    /// Region the request must be SigV4-signed against, derived once during
+    /// request construction so the signing hook does not need to re-resolve it.
+    pub(super) signing_region: String,
+}
+
+pub(super) fn build_provider_state(
+    reverse_tool_map: HashMap<String, String>,
+    region: &str,
+) -> BedrockState {
+    BedrockState {
+        reverse_tool_map,
+        signing_region: region.to_string(),
     }
-    Value::Object(state)
 }
 
 pub(super) fn reverse_tool_map(context: &ChatAdapterContext<'_>) -> HashMap<String, String> {
     context
-        .provider_state
-        .as_ref()
-        .and_then(|state| state.get(TOOL_NAME_MAP_STATE_KEY))
-        .cloned()
-        .and_then(|value| serde_json::from_value::<HashMap<String, String>>(value).ok())
+        .provider_state_as::<BedrockState>()
+        .map(|state| state.reverse_tool_map.clone())
         .unwrap_or_default()
 }

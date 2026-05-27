@@ -1,7 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
 
 use futures_util::StreamExt;
 use serde_json::Value;
@@ -286,9 +284,9 @@ impl Client {
         if stream_behavior.mode == StreamMode::FakeFromResponse {
             let response = self.execute_http(signed_request).await?;
             let response = transform_response_or_error(adapter, &context, response)?;
-            return Ok(Box::pin(OnceStream::new(Ok(response_to_stream_chunk(
-                response,
-            )))));
+            return Ok(Box::pin(futures_util::stream::once(async move {
+                Ok(response_to_stream_chunk(response))
+            })));
         }
 
         let byte_stream = self.stream_http(signed_request, adapter, &context).await?;
@@ -479,9 +477,10 @@ impl Client {
             ModelRef::Model(model_name) => {
                 let model_name = if model_name.as_str().is_empty() {
                     self.inner.config.default_model.as_ref().ok_or_else(|| {
-                        SigmaError::NoDeploymentForModel {
-                            model: model.clone(),
-                        }
+                        SigmaError::InvalidArgument(
+                            "ChatRequest.model is empty and ClientConfig.default_model is not set"
+                                .to_string(),
+                        )
                     })?
                 } else {
                     model_name
@@ -750,22 +749,4 @@ async fn provider_response(response: reqwest::Response) -> SigmaResult<crate::Pr
         headers,
         body,
     })
-}
-
-struct OnceStream<T> {
-    item: Option<T>,
-}
-
-impl<T> OnceStream<T> {
-    fn new(item: T) -> Self {
-        Self { item: Some(item) }
-    }
-}
-
-impl<T: Unpin> futures_core::Stream for OnceStream<T> {
-    type Item = T;
-
-    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        Poll::Ready(self.item.take())
-    }
 }

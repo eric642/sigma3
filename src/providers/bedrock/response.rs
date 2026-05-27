@@ -1,9 +1,9 @@
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use http::StatusCode;
 use serde_json::{Map, Value};
 
+use crate::providers::common::current_unix_timestamp;
 use crate::types::chat::{
     ChatChoice, ChatResponse, ChatResponseMessage, FinishReason, FunctionToolCall, ReasoningBlock,
     Role, ServiceTier, ToolCall, Usage,
@@ -250,6 +250,18 @@ pub(super) fn bedrock_error_response(
         .and_then(Value::as_str)
         .map(str::to_string)
         .unwrap_or_else(|| fallback_error_message(response.status, &response.body));
+    let retry_after = crate::providers::common::parse_retry_after(&response.headers);
+
+    if let Some(err) = crate::providers::common::classify_provider_error(
+        context.provider,
+        response.status,
+        code.as_deref(),
+        &message,
+        retry_after,
+        details.clone(),
+    ) {
+        return err;
+    }
 
     SigmaError::ProviderBusiness {
         provider: context.provider.to_owned(),
@@ -292,12 +304,4 @@ fn fallback_error_message(status: StatusCode, body: &[u8]) -> String {
     } else {
         String::from_utf8_lossy(body).into_owned()
     }
-}
-
-pub(super) fn current_unix_timestamp() -> u32 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| u32::try_from(duration.as_secs()).ok())
-        .unwrap_or(0)
 }

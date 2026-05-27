@@ -228,12 +228,23 @@ pub(super) fn add_property_ordering(value: &mut Value) {
 }
 
 pub(super) fn supports_response_json_schema(model: &str) -> bool {
-    let model = model.to_ascii_lowercase();
-    model.contains("gemini-2.") || is_gemini_3_or_newer(&model)
+    use crate::ModelName;
+    use crate::model_capabilities::{VendorFamily, resolve_capabilities};
+
+    matches!(
+        resolve_capabilities("gemini", &ModelName::from(model), None).vendor_family,
+        VendorFamily::GeminiV2 | VendorFamily::GeminiV3
+    )
 }
 
 pub(super) fn is_gemini_3_or_newer(model: &str) -> bool {
-    model.to_ascii_lowercase().contains("gemini-3")
+    use crate::ModelName;
+    use crate::model_capabilities::{VendorFamily, resolve_capabilities};
+
+    matches!(
+        resolve_capabilities("gemini", &ModelName::from(model), None).vendor_family,
+        VendorFamily::GeminiV3
+    )
 }
 
 pub(super) fn u32_field(value: &Value, key: &str) -> u32 {

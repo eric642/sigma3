@@ -471,3 +471,53 @@ async fn gemini_create_maps_error_body_to_provider_business_error() {
             && message == "bad request"
     ));
 }
+
+#[tokio::test]
+async fn gemini_rejects_tool_choice_function_without_name() {
+    let client = Client::build(gemini_config("http://localhost:8080".to_string())).unwrap();
+    let request = ChatRequest::new(
+        ModelRef::model("gemini-public"),
+        vec![UserMessage::from("hi").into()],
+    )
+    .with_params(ChatRequestParams {
+        tool_choice: Some(ToolChoice::function("")),
+        ..Default::default()
+    });
+
+    let err = client
+        .chat()
+        .create(&request)
+        .await
+        .expect_err("tool_choice type=function with empty name should fail");
+    assert!(matches!(
+        err,
+        SigmaError::ProviderTransform { provider, ref message }
+            if provider == "gemini-primary"
+                && message.contains("tool_choice")
+                && message.contains("function.name")
+    ));
+}
+
+#[tokio::test]
+async fn gemini_rejects_parallel_tool_calls_param() {
+    let client = Client::build(gemini_config("http://localhost:8080".to_string())).unwrap();
+    let request = ChatRequest::new(
+        ModelRef::model("gemini-public"),
+        vec![UserMessage::from("hi").into()],
+    )
+    .with_params(ChatRequestParams {
+        parallel_tool_calls: Some(true),
+        ..Default::default()
+    });
+
+    let err = client
+        .chat()
+        .create(&request)
+        .await
+        .expect_err("parallel_tool_calls is not exposed by Gemini's generateContent API");
+    assert!(matches!(
+        err,
+        SigmaError::UnsupportedParams { ref params, .. }
+            if params.iter().any(|p| p == "parallel_tool_calls")
+    ));
+}

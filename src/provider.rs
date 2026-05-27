@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::collections::{BTreeMap, HashMap};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -12,7 +13,8 @@ use crate::config::{
     ChatParameterMap, ParamPolicy, ProviderCommonConfig, ProviderConfigMap, ProviderInstanceConfig,
 };
 use crate::provider_http::{
-    ProviderByteStream, ProviderEndpoint, ProviderRequest, ProviderResponse, SignedProviderRequest,
+    ProviderByteStream, ProviderEndpoint, ProviderRequest, ProviderResponse, ProviderState,
+    SignedProviderRequest,
 };
 use crate::types::chat::{
     AssistantDelta, ChatMessage, ChatRequest, ChatResponse, ChatStreamChoice, ChatStreamChunk,
@@ -43,7 +45,12 @@ pub type ProviderInstanceConfigSchemaFn = fn(ProviderKindStatic) -> Value;
 /// Static provider registration collected by the inventory registry.
 ///
 /// Provider crates normally create registrations with [`crate::submit_provider!`]
-/// instead of constructing this type directly.
+/// instead of constructing this type directly. The macro expands into a
+/// `ProviderRegistration` with the typed `config` deserialization wired through
+/// a function pointer, then submits it through `inventory::submit!` so
+/// [`ProviderCatalog::from_inventory`] can collect it during
+/// [`crate::Client::build`]. Each registration must use a unique
+/// [`ProviderKindStatic`]; duplicates are rejected at catalog construction.
 #[derive(Debug, Clone, Copy)]
 pub struct ProviderRegistration {
     /// Provider kind matched against [`crate::ProviderInstanceConfig::kind`].
@@ -320,9 +327,15 @@ const fn default_param_policy() -> ParamPolicy {
 
 /// Initialization data passed to a provider constructor.
 ///
-/// sigma creates one `ProviderInit` per [`crate::ProviderInstanceConfig`].
-/// Provider drivers should validate any provider-specific config here and
-/// return [`SigmaError::ProviderConfig`] for invalid configuration.
+/// sigma creates one `ProviderInit` per [`crate::ProviderInstanceConfig`] when
+/// [`crate::Client::build`] runs the catalog. Provider drivers should validate
+/// any provider-specific config here, resolve credentials from environment
+/// fallbacks, and return [`SigmaError::ProviderConfig`] for invalid input.
+///
+/// `TConfig` is `ProviderConfigMap` for the raw inventory entry point and the
+/// typed `config` struct for downstream constructors invoked through
+/// [`crate::submit_provider!`]. Use [`ProviderInit::deserialize_config`] or
+/// [`ProviderInit::into_typed_config`] when starting from raw configuration.
 #[derive(Debug, Clone)]
 pub struct ProviderInit<TConfig = ProviderConfigMap> {
     /// Configured provider instance id.
@@ -476,12 +489,28 @@ pub struct ChatAdapterContext<'a> {
     pub provider_model: &'a ModelName,
     /// Opaque model metadata from the selected deployment, when routing used one.
     pub model_info: Option<&'a Value>,
-    /// Request-scoped provider state created while transforming the outbound
-    /// request.
+    /// Request-scoped, type-erased provider state created while transforming
+    /// the outbound request.
     ///
     /// This is never serialized. Adapters can use it when a response transform
     /// needs data derived from the request, such as Anthropic tool-name maps.
-    pub provider_state: Option<Value>,
+    /// Use [`ChatAdapterContext::provider_state_as`] to recover the original
+    /// typed value.
+    pub provider_state: Option<ProviderState>,
+}
+
+impl ChatAdapterContext<'_> {
+    /// Returns a reference to the provider state if it was set with type `T`.
+    ///
+    /// Returns `None` when the request did not produce any state, or when the
+    /// state was set with a different concrete type. Adapters should pick a
+    /// stable concrete type per provider so request and response transforms
+    /// agree on the shape they share.
+    pub fn provider_state_as<T: Any + Send + Sync>(&self) -> Option<&T> {
+        self.provider_state
+            .as_ref()
+            .and_then(|state| state.downcast_ref::<T>())
+    }
 }
 
 /// Provider-neutral request data passed through the chat adapter lifecycle.
@@ -516,9 +545,24 @@ pub struct ChatAdapterRequest<'a> {
 }
 
 /// Stream of semantic chat chunks returned by sigma.
+///
+/// Each item is either one [`crate::types::chat::ChatStreamChunk`] or a
+/// [`SigmaError`]. Errors are non-fatal at the type level — callers may keep
+/// polling after a failed item — but most provider adapters terminate the
+/// stream after surfacing one error because the underlying HTTP body is no
+/// longer trustworthy. Adapters produce these streams from
+/// [`ChatCompletionAdapter::transform_stream`] and sigma forwards them
+/// unchanged through [`crate::Client::chat`].
 pub type ChatStream = Pin<Box<dyn Stream<Item = SigmaResult<ChatStreamChunk>> + Send + 'static>>;
 
 /// Streaming strategy used by a chat adapter.
+///
+/// Adapters report this through [`ChatCompletionAdapter::stream_behavior`].
+/// `Native` is the default for providers that expose a streaming HTTP endpoint
+/// (OpenAI SSE, Anthropic SSE, Bedrock event-stream, Gemini SSE).
+/// `FakeFromResponse` lets providers without a streaming endpoint still satisfy
+/// `client.chat().create_stream(...)` callers by issuing the non-streaming
+/// request and emitting the full response as a single chunk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamMode {
     /// Use the HTTP streaming path and let the adapter transform provider bytes.
@@ -528,6 +572,13 @@ pub enum StreamMode {
 }
 
 /// Controls how sigma prepares and executes streaming requests.
+///
+/// Adapters return this from [`ChatCompletionAdapter::stream_behavior`].
+/// `mode` selects the execution path. `inject_stream` controls whether sigma
+/// pre-populates the `"stream"` chat parameter before parameter rule
+/// validation; set this to `true` when the provider expects a literal
+/// `stream: true` body field, and to `false` when the adapter manages the
+/// streaming flag itself or the field would be rejected by the upstream API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamBehavior {
     /// Stream execution mode.
@@ -627,6 +678,15 @@ pub trait ChatCompletionAdapter: Send + Sync {
     /// [`SigmaError::ProviderBusiness`] with stable codes, human-readable
     /// messages, and structured details. Transport failures that do not produce
     /// an HTTP response still return [`SigmaError::Http`].
+    ///
+    /// The default implementation only inspects the HTTP status and returns the
+    /// raw response body as a UTF-8 lossy string in
+    /// [`SigmaError::ProviderBusiness`]'s `message`, with `code` and `details`
+    /// unset. Real adapters should override this to parse provider-specific
+    /// error envelopes, surface stable codes, and—when applicable—return one of
+    /// the semantic variants such as `SigmaError::RateLimited` or
+    /// `SigmaError::AuthFailed` so callers can implement portable retry or
+    /// fallback logic.
     fn transform_error_response(
         &self,
         context: &ChatAdapterContext<'_>,

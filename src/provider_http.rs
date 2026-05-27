@@ -1,4 +1,6 @@
+use std::any::Any;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use bytes::Bytes;
 use futures_core::Stream;
@@ -6,6 +8,15 @@ use http::{HeaderMap, Method, StatusCode};
 use serde_json::Value;
 
 use crate::SigmaResult;
+
+/// Type-erased, request-scoped state shared between an adapter's request and
+/// response transforms.
+///
+/// Adapters write a typed value into a [`ProviderRequest`] and read it back
+/// through [`crate::ChatAdapterContext::provider_state_as`]. The state is never
+/// serialized over HTTP. Use [`Arc`] so sigma can hand the same value to the
+/// adapter's response/stream transforms without cloning the inner data.
+pub type ProviderState = Arc<dyn Any + Send + Sync>;
 
 /// Byte stream returned by provider HTTP execution.
 ///
@@ -28,7 +39,7 @@ pub struct ProviderEndpoint {
 /// Adapters build this after mapping parameters and selecting an endpoint.
 /// The same adapter then signs it into a
 /// [`SignedProviderRequest`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct ProviderRequest {
     /// HTTP method to use for the provider request.
     pub method: Method,
@@ -41,15 +52,17 @@ pub struct ProviderRequest {
     /// Adapters construct JSON here so tests and signing hooks can inspect the
     /// final provider-native body before sigma serializes it for HTTP.
     pub body: Value,
-    /// Provider-local state for response or stream transformation.
+    /// Provider-local, type-erased state for response or stream transformation.
     ///
     /// This is never sent over HTTP. Adapters use it for request-scoped data
-    /// such as Anthropic tool-name reverse maps.
-    pub provider_state: Option<Value>,
+    /// such as Anthropic tool-name reverse maps. Read it back through
+    /// [`crate::ChatAdapterContext::provider_state_as`] so the typed downcast is
+    /// a single line at the call site.
+    pub provider_state: Option<ProviderState>,
 }
 
 /// Provider request after authentication or provider-specific signing.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct SignedProviderRequest {
     /// HTTP method to use for the provider request.
     pub method: Method,
@@ -61,10 +74,10 @@ pub struct SignedProviderRequest {
     ///
     /// sigma serializes this value when sending the HTTP request.
     pub body: Value,
-    /// Provider-local state for response or stream transformation.
+    /// Provider-local, type-erased state for response or stream transformation.
     ///
     /// This is never sent over HTTP.
-    pub provider_state: Option<Value>,
+    pub provider_state: Option<ProviderState>,
 }
 
 impl From<ProviderRequest> for SignedProviderRequest {

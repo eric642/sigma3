@@ -4,11 +4,10 @@ use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use futures_core::Stream;
-use http::StatusCode;
 use serde_json::Value;
 
 use crate::provider_http::ProviderByteStream;
-use crate::providers::common::event_data;
+use crate::providers::common::{SseLineBuffer, event_data};
 use crate::types::chat::{
     AssistantDelta, ChatStreamChoice, ChatStreamChunk, FinishReason, FunctionCallDelta,
     ReasoningBlock, ToolCallDelta, ToolCallKind, Usage,
@@ -16,15 +15,18 @@ use crate::types::chat::{
 use crate::types::shared::{CompletionTokensDetails, PromptTokensDetails};
 use crate::{ProviderId, SigmaError, SigmaResult};
 
+use crate::providers::common::current_unix_timestamp;
+
+use super::RESPONSE_FORMAT_TOOL_NAME;
+use super::error::stream_error_from_event;
 use super::response::{
     map_finish_reason, optional_nonzero, reasoning_response_block, server_tool_use, u32_field,
 };
-use super::state::current_unix_timestamp;
 
 pub(super) struct AnthropicSseStream {
     provider: ProviderId,
     stream: ProviderByteStream,
-    buffer: String,
+    buffer: SseLineBuffer,
     pending: std::collections::VecDeque<SigmaResult<ChatStreamChunk>>,
     done: bool,
     id: String,
@@ -34,6 +36,14 @@ pub(super) struct AnthropicSseStream {
     current_tool_index: Option<u32>,
     current_tool_id: Option<String>,
     current_tool_name: Option<String>,
+    /// Set while the active tool block is sigma's `json_tool_call` fallback,
+    /// so `input_json_delta` events emit `delta.content` instead of tool-call
+    /// deltas.
+    current_tool_is_response_format_fallback: bool,
+    /// Set if the stream observed at least one fallback tool block, so the
+    /// terminal `message_delta` rewrites `tool_use` finish reason to `Stop`.
+    response_format_fallback_hit: bool,
+    response_format_fallback_active: bool,
     reverse_tool_map: HashMap<String, String>,
 }
 
@@ -42,11 +52,12 @@ impl AnthropicSseStream {
         provider: ProviderId,
         stream: ProviderByteStream,
         reverse_tool_map: HashMap<String, String>,
+        response_format_fallback_active: bool,
     ) -> Self {
         Self {
             provider,
             stream,
-            buffer: String::new(),
+            buffer: SseLineBuffer::new(),
             pending: std::collections::VecDeque::new(),
             done: false,
             id: "msg_anthropic_stream".to_string(),
@@ -56,39 +67,30 @@ impl AnthropicSseStream {
             current_tool_index: None,
             current_tool_id: None,
             current_tool_name: None,
+            current_tool_is_response_format_fallback: false,
+            response_format_fallback_hit: false,
+            response_format_fallback_active,
             reverse_tool_map,
         }
     }
 
     fn push_chunk(&mut self, chunk: Bytes) {
-        match std::str::from_utf8(&chunk) {
-            Ok(text) => {
-                self.buffer.push_str(&text.replace("\r\n", "\n"));
-                self.drain_buffer(false);
-            }
-            Err(err) => {
-                self.done = true;
-                self.pending.push_back(Err(SigmaError::ProviderResponse {
-                    provider: self.provider.clone(),
-                    message: err.to_string(),
-                }));
-            }
-        }
+        self.buffer.extend(&chunk);
+        self.drain_buffer(false);
     }
 
     fn drain_buffer(&mut self, flush: bool) {
-        while let Some(index) = self.buffer.find("\n\n") {
-            let event = self.buffer[..index].to_string();
-            self.buffer.drain(..index + 2);
+        while let Some(event) = self.buffer.next_event() {
             self.push_event(&event);
             if self.done {
                 return;
             }
         }
-        if flush {
-            let event = self.buffer.trim().to_string();
-            self.buffer.clear();
+        if flush && !self.buffer.is_empty() {
+            let event = self.buffer.drain_remaining();
+            let event = event.trim();
             if !event.is_empty() {
+                let event = event.to_string();
                 self.push_event(&event);
             }
         }
@@ -121,6 +123,7 @@ impl AnthropicSseStream {
                 self.current_tool_index = None;
                 self.current_tool_id = None;
                 self.current_tool_name = None;
+                self.current_tool_is_response_format_fallback = false;
             }
             Some("message_delta") => self.handle_message_delta(&value),
             Some("message_stop") => self.done = true,
@@ -132,18 +135,17 @@ impl AnthropicSseStream {
                     .and_then(Value::as_str)
                     .unwrap_or("anthropic stream error")
                     .to_string();
-                let code = error
+                let error_type = error
                     .get("type")
                     .and_then(Value::as_str)
                     .map(str::to_string);
                 self.done = true;
-                self.pending.push_back(Err(SigmaError::ProviderBusiness {
-                    provider: self.provider.clone(),
-                    status: StatusCode::INTERNAL_SERVER_ERROR,
-                    code,
-                    message,
-                    details: Some(error),
-                }));
+                self.pending.push_back(Err(stream_error_from_event(
+                    &self.provider,
+                    error_type.as_deref(),
+                    &message,
+                    Some(error),
+                )));
             }
             _ => {}
         }
@@ -195,9 +197,10 @@ impl AnthropicSseStream {
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string();
-                let name = block
-                    .get("name")
-                    .and_then(Value::as_str)
+                let raw_name = block.get("name").and_then(Value::as_str);
+                let is_response_format_fallback = self.response_format_fallback_active
+                    && raw_name == Some(RESPONSE_FORMAT_TOOL_NAME);
+                let name = raw_name
                     .map(|name| {
                         self.reverse_tool_map
                             .get(name)
@@ -208,6 +211,14 @@ impl AnthropicSseStream {
                 self.current_tool_index = Some(index);
                 self.current_tool_id = Some(id.clone());
                 self.current_tool_name = Some(name.clone());
+                self.current_tool_is_response_format_fallback = is_response_format_fallback;
+
+                if is_response_format_fallback {
+                    self.response_format_fallback_hit = true;
+                    // Skip emitting a tool-call delta; later input_json_delta
+                    // events arrive as content fragments instead.
+                    return;
+                }
                 self.pending.push_back(Ok(self.chunk(
                     None,
                     Some(vec![ToolCallDelta {
@@ -261,6 +272,14 @@ impl AnthropicSseStream {
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string();
+                if self.current_tool_is_response_format_fallback {
+                    // Surface the partial JSON as content so the caller's
+                    // streaming consumer can assemble the JSON object the same
+                    // way it would for a non-fallback model.
+                    self.pending
+                        .push_back(Ok(self.chunk(Some(arguments), None, None, None, None)));
+                    return;
+                }
                 self.pending.push_back(Ok(self.chunk(
                     None,
                     Some(vec![ToolCallDelta {
@@ -305,11 +324,19 @@ impl AnthropicSseStream {
     }
 
     fn handle_message_delta(&mut self, value: &Value) {
-        let finish_reason = value
+        let raw_finish_reason = value
             .get("delta")
             .and_then(|delta| delta.get("stop_reason"))
             .and_then(Value::as_str)
             .map(map_finish_reason);
+        let finish_reason = if self.response_format_fallback_hit {
+            // Anthropic stops with `tool_use` when our injected
+            // `json_tool_call` finishes streaming. Rewriting it to `Stop`
+            // matches the semantics the caller asked for via response_format.
+            Some(FinishReason::Stop)
+        } else {
+            raw_finish_reason
+        };
         let usage = value.get("usage").and_then(Value::as_object).map(|usage| {
             let completion_tokens = u32_field(usage, "output_tokens");
             Usage {

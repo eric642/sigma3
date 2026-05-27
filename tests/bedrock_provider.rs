@@ -498,15 +498,7 @@ async fn bedrock_create_stream_decodes_event_stream_text_tool_finish_and_usage()
     let request = ChatRequest::new(
         ModelRef::model("bedrock-public"),
         vec![UserMessage::from("stream").into()],
-    )
-    .with_params(ChatRequestParams {
-        parallel_tool_calls: Some(false),
-        stream_options: Some(StreamOptions {
-            include_usage: Some(true),
-            include_obfuscation: None,
-        }),
-        ..Default::default()
-    });
+    );
 
     let chunks = client
         .chat()
@@ -559,4 +551,153 @@ async fn bedrock_create_stream_decodes_event_stream_text_tool_finish_and_usage()
         assert!(!additional.contains_key("stream_options"));
         assert!(!additional.contains_key("parallel_tool_calls"));
     }
+}
+
+#[tokio::test]
+async fn bedrock_disambiguates_colliding_sanitized_tool_names() {
+    let server = MockServer::start().await;
+    mount_bedrock_response(
+        &server,
+        json!({
+            "output": {
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "toolUse": {
+                                "toolUseId": "tu_a",
+                                "name": "actions_foo",
+                                "input": {"v": "a"}
+                            }
+                        },
+                        {
+                            "toolUse": {
+                                "toolUseId": "tu_b",
+                                "name": "actions_foo_2",
+                                "input": {"v": "b"}
+                            }
+                        }
+                    ]
+                }
+            },
+            "stopReason": "tool_use",
+            "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2}
+        }),
+    )
+    .await;
+    let client = Client::build(bedrock_config(server.uri(), static_aws_config())).unwrap();
+    let request = ChatRequest::new(
+        ModelRef::model("bedrock-public"),
+        vec![UserMessage::from("hi").into()],
+    )
+    .with_params(ChatRequestParams {
+        tools: Some(vec![
+            ToolDefinition::Function(FunctionTool {
+                function: FunctionObject {
+                    name: "actions/foo".to_string(),
+                    description: None,
+                    parameters: None,
+                    strict: None,
+                },
+            }),
+            ToolDefinition::Function(FunctionTool {
+                function: FunctionObject {
+                    name: "actions.foo".to_string(),
+                    description: None,
+                    parameters: None,
+                    strict: None,
+                },
+            }),
+        ]),
+        ..Default::default()
+    });
+
+    let response = client.chat().create(&request).await.unwrap();
+    let tool_calls = response.choices[0].message.tool_calls.as_ref().unwrap();
+    let names = tool_calls
+        .iter()
+        .map(|call| match call {
+            ToolCall::Function(call) => call.function.name.clone(),
+            other => panic!("unexpected tool call: {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    let expected: Vec<String> = vec!["actions/foo".into(), "actions.foo".into()];
+    assert_eq!(names, expected, "reverse map must restore both originals");
+
+    let body = last_body(&server).await;
+    let tool_specs = body["toolConfig"]["tools"].as_array().unwrap();
+    let wire_names = tool_specs
+        .iter()
+        .filter_map(|tool| {
+            tool.get("toolSpec")
+                .and_then(|spec| spec.get("name"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect::<Vec<_>>();
+    let unique = wire_names.iter().collect::<std::collections::HashSet<_>>();
+    assert_eq!(
+        wire_names.len(),
+        unique.len(),
+        "wire tool names must be unique even when sanitized forms collide"
+    );
+}
+
+#[tokio::test]
+async fn bedrock_rejects_parallel_tool_calls_param() {
+    let client = Client::build(bedrock_config(
+        "http://localhost:8080".to_string(),
+        static_aws_config(),
+    ))
+    .unwrap();
+    let request = ChatRequest::new(
+        ModelRef::model("bedrock-public"),
+        vec![UserMessage::from("hi").into()],
+    )
+    .with_params(ChatRequestParams {
+        parallel_tool_calls: Some(false),
+        ..Default::default()
+    });
+
+    let err = client
+        .chat()
+        .create(&request)
+        .await
+        .expect_err("parallel_tool_calls is not supported by the Bedrock Converse API");
+    assert!(matches!(
+        err,
+        SigmaError::UnsupportedParams { ref params, .. }
+            if params.iter().any(|p| p == "parallel_tool_calls")
+    ));
+}
+
+#[tokio::test]
+async fn bedrock_rejects_stream_options_param() {
+    let client = Client::build(bedrock_config(
+        "http://localhost:8080".to_string(),
+        static_aws_config(),
+    ))
+    .unwrap();
+    let request = ChatRequest::new(
+        ModelRef::model("bedrock-public"),
+        vec![UserMessage::from("hi").into()],
+    )
+    .with_params(ChatRequestParams {
+        stream_options: Some(StreamOptions {
+            include_usage: Some(true),
+            include_obfuscation: None,
+        }),
+        ..Default::default()
+    });
+
+    let err = client
+        .chat()
+        .create(&request)
+        .await
+        .expect_err("stream_options is not supported by the Bedrock Converse API");
+    assert!(matches!(
+        err,
+        SigmaError::UnsupportedParams { ref params, .. }
+            if params.iter().any(|p| p == "stream_options")
+    ));
 }

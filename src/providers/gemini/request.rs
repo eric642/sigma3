@@ -430,7 +430,7 @@ fn map_gemini_params(
                 special_tools.extend(mapped.special_tools);
             }
             "tool_choice" => {
-                tool_config = map_tool_choice(value);
+                tool_config = map_tool_choice(provider, value)?;
             }
             "web_search" => special_tools.push(json!({ "googleSearch": {} })),
             "service_tier" => {
@@ -438,7 +438,6 @@ fn map_gemini_params(
                     service_tier = Some(Value::String(gemini_service_tier(value).to_string()));
                 }
             }
-            "parallel_tool_calls" => {}
             _ => {}
         }
     }
@@ -528,25 +527,37 @@ fn function_declaration(function: &Map<String, Value>) -> Value {
     Value::Object(declaration)
 }
 
-fn map_tool_choice(value: &Value) -> Option<Value> {
+fn map_tool_choice(provider: &ProviderId, value: &Value) -> SigmaResult<Option<Value>> {
     match value {
-        Value::String(choice) => Some(tool_choice_mode(choice, None)),
+        Value::String(choice) => Ok(Some(tool_choice_mode(choice, None))),
         Value::Object(object) => {
             if object.get("type").and_then(Value::as_str) == Some("function") {
+                // Gemini's `functionCallingConfig.allowedFunctionNames` is the only way
+                // to force a specific function. Without `function.name`, the caller
+                // cannot have meant "any function" — that is `tool_choice = "required"`
+                // — so the safe behavior is to surface a configuration error rather
+                // than silently downgrading the request.
                 let name = object
                     .get("function")
                     .and_then(Value::as_object)
                     .and_then(|function| function.get("name"))
-                    .and_then(Value::as_str);
-                Some(tool_choice_mode("required", name))
+                    .and_then(Value::as_str)
+                    .filter(|name| !name.is_empty())
+                    .ok_or_else(|| SigmaError::ProviderTransform {
+                        provider: provider.clone(),
+                        message:
+                            "tool_choice with type=function requires a non-empty function.name"
+                                .to_string(),
+                    })?;
+                Ok(Some(tool_choice_mode("required", Some(name))))
             } else {
-                object
+                Ok(object
                     .get("type")
                     .and_then(Value::as_str)
-                    .map(|mode| tool_choice_mode(mode, None))
+                    .map(|mode| tool_choice_mode(mode, None)))
             }
         }
-        _ => None,
+        _ => Ok(None),
     }
 }
 

@@ -1,21 +1,12 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 
 use serde_json::{Map, Value, json};
 
 use crate::config::ChatParameterMap;
+use crate::providers::common::{ToolNameRewrites, build_tool_name_rewrites, truncate_chars};
 use crate::{ProviderId, SigmaError, SigmaResult};
 
-#[derive(Default)]
-pub(super) struct ToolNameMaps {
-    pub(super) forward: HashMap<String, String>,
-    pub(super) reverse: HashMap<String, String>,
-}
-
-impl ToolNameMaps {
-    pub(super) fn has_rewrites(&self) -> bool {
-        !self.forward.is_empty()
-    }
-}
+pub(super) type ToolNameMaps = ToolNameRewrites;
 
 pub(super) fn prepare_tools(params: &mut ChatParameterMap) -> SigmaResult<ToolNameMaps> {
     let Some(value) = params.get_mut("tools") else {
@@ -101,42 +92,11 @@ fn map_openai_tool(tool: &Value) -> SigmaResult<Value> {
 }
 
 fn build_tool_name_maps(names: &[String]) -> ToolNameMaps {
-    let mut forward = HashMap::new();
-    let mut used = BTreeSet::new();
-
-    for original in names {
-        let candidate = sanitize_tool_name(original);
-        if candidate == *original {
-            used.insert(candidate);
-        }
-    }
-
-    for original in names {
-        let candidate = sanitize_tool_name(original);
-        if candidate == *original || forward.contains_key(original) {
-            continue;
-        }
-
-        let mut unique = candidate.clone();
-        let mut suffix = 1;
-        while used.contains(&unique) {
-            suffix += 1;
-            let suffix_value = format!("_{suffix}");
-            let max_head = 128usize.saturating_sub(suffix_value.len());
-            unique = format!("{}{}", truncate_chars(&candidate, max_head), suffix_value);
-        }
-        forward.insert(original.clone(), unique.clone());
-        used.insert(unique);
-    }
-
-    let reverse = forward
-        .iter()
-        .map(|(original, mapped)| (mapped.clone(), original.clone()))
-        .collect();
-
-    ToolNameMaps { forward, reverse }
+    build_tool_name_rewrites(names, 128, sanitize_tool_name)
 }
 
+/// Anthropic accepts `[A-Za-z0-9_-]{1,128}`. Replace any other character with
+/// an underscore and truncate to 128 Unicode scalar values.
 fn sanitize_tool_name(name: &str) -> String {
     truncate_chars(
         &name
@@ -151,10 +111,6 @@ fn sanitize_tool_name(name: &str) -> String {
             .collect::<String>(),
         128,
     )
-}
-
-fn truncate_chars(value: &str, max_chars: usize) -> String {
-    value.chars().take(max_chars).collect()
 }
 
 pub(super) fn apply_tool_choice_name_map(

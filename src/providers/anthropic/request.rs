@@ -5,6 +5,7 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 use crate::config::ChatParameterMap;
+use crate::model_capabilities::{ThinkingMode, resolve_capabilities};
 use crate::providers::common::{parse_data_uri, signing_header_value as header_value};
 use crate::types::chat::{
     AssistantContent, AssistantContentPart, AssistantMessage, CacheControl, CacheControlTtl,
@@ -15,6 +16,12 @@ use crate::types::shared::ResponseFormat;
 use crate::{ModelName, ProviderId, SigmaError, SigmaResult};
 
 use super::{AnthropicChatAdapter, RESPONSE_FORMAT_TOOL_NAME};
+
+/// System message text prefix used by upstream tooling to embed Anthropic-specific
+/// billing routing hints. These hints are operator-controlled metadata, not
+/// user-visible content, so the request translator drops any system block whose
+/// text starts with this prefix before sending the request to Anthropic.
+const ANTHROPIC_BILLING_HEADER_PREFIX: &str = "x-anthropic-billing-header:";
 
 impl AnthropicChatAdapter {
     pub(super) fn collect_beta_values(
@@ -130,7 +137,8 @@ fn thinking_for_reasoning_effort(
     if value == "none" {
         return Ok(None);
     }
-    if is_adaptive_thinking_model(model) {
+    let caps = resolve_capabilities("anthropic", &ModelName::from(model), None);
+    if caps.thinking == ThinkingMode::Adaptive {
         return Ok(Some(AnthropicThinkingParam {
             r#type: AnthropicThinkingType::Adaptive,
             budget_tokens: None,
@@ -156,26 +164,6 @@ fn thinking_for_reasoning_effort(
         r#type: AnthropicThinkingType::Enabled,
         budget_tokens: Some(budget_tokens),
     }))
-}
-
-fn is_adaptive_thinking_model(model: &str) -> bool {
-    let model = model.to_ascii_lowercase();
-    [
-        "opus-4-6",
-        "opus_4_6",
-        "opus-4.6",
-        "opus_4.6",
-        "sonnet-4-6",
-        "sonnet_4_6",
-        "sonnet-4.6",
-        "sonnet_4.6",
-        "opus-4-7",
-        "opus_4_7",
-        "opus-4.7",
-        "opus_4.7",
-    ]
-    .iter()
-    .any(|needle| model.contains(needle))
 }
 
 pub(super) fn map_user_metadata(params: &mut ChatParameterMap) {
@@ -224,7 +212,7 @@ pub(super) fn map_response_format(
             message: err.to_string(),
         }
     })?;
-    if supports_structured_output(model.as_str()) {
+    if resolve_capabilities("anthropic", model, None).supports_structured_output {
         let output_format = match format {
             ResponseFormat::Text => return Ok(()),
             ResponseFormat::JsonObject => json!({
@@ -273,28 +261,6 @@ pub(super) fn provider_options_contain(
     key: &str,
 ) -> bool {
     provider_options.is_some_and(|provider_options| provider_options.contains_key(key))
-}
-
-fn supports_structured_output(model: &str) -> bool {
-    let model = model.to_ascii_lowercase();
-    [
-        "sonnet-4.5",
-        "sonnet-4-5",
-        "opus-4.1",
-        "opus-4-1",
-        "opus-4.5",
-        "opus-4-5",
-        "opus-4.6",
-        "opus-4-6",
-        "opus-4.7",
-        "opus-4-7",
-        "sonnet-4.6",
-        "sonnet-4-6",
-        "sonnet_4.6",
-        "sonnet_4_6",
-    ]
-    .iter()
-    .any(|needle| model.contains(needle))
 }
 
 fn add_tool(params: &mut ChatParameterMap, tool: Value) {
@@ -456,7 +422,7 @@ pub(super) fn translate_anthropic_messages(
 fn append_system_content(system: &mut Vec<Value>, content: &[Value]) {
     for item in content {
         let text = item.get("text").and_then(Value::as_str).unwrap_or_default();
-        if text.is_empty() || text.starts_with("x-anthropic-billing-header:") {
+        if text.is_empty() || text.starts_with(ANTHROPIC_BILLING_HEADER_PREFIX) {
             continue;
         }
         system.push(item.clone());
@@ -689,6 +655,9 @@ fn source_from_url(provider: &ProviderId, url: &str) -> SigmaResult<Value> {
     }
 }
 
+// Anthropic rejects empty `text` content blocks with HTTP 400. Substitute a
+// single space when the caller passes through an empty string so a chained
+// conversation does not fail at the wire because of an empty turn.
 fn non_empty_text(text: &str) -> &str {
     if text.is_empty() { " " } else { text }
 }

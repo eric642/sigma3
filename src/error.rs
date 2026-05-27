@@ -88,6 +88,11 @@ pub enum SigmaError {
         message: String,
     },
     /// Provider returned a non-success HTTP status with a business error body.
+    ///
+    /// This is the catch-all variant: adapters return it whenever they cannot
+    /// classify the failure into one of the semantic variants below. Callers
+    /// that want to react to specific failure modes should match on the
+    /// dedicated variants first and fall back to this one for everything else.
     #[error("provider `{provider}` business error ({status}): {message}")]
     ProviderBusiness {
         /// Provider instance selected for the request.
@@ -100,6 +105,78 @@ pub enum SigmaError {
         message: String,
         /// Provider-native structured error details for callers that need
         /// provider-specific handling.
+        details: Option<Value>,
+    },
+    /// Provider rejected the request with a rate limit or overload signal.
+    ///
+    /// Callers should typically back off and retry. `retry_after` carries the
+    /// upstream `Retry-After` header value when the provider sent one (in
+    /// seconds).
+    #[error("provider `{provider}` rate limited ({status}): {message}")]
+    RateLimited {
+        /// Provider instance selected for the request.
+        provider: ProviderId,
+        /// HTTP status returned by the provider.
+        status: StatusCode,
+        /// Provider-native stable error code, when the provider returned one.
+        code: Option<String>,
+        /// Human-readable provider error message.
+        message: String,
+        /// Suggested retry delay parsed from the provider response, in seconds.
+        retry_after: Option<u64>,
+        /// Provider-native structured error details.
+        details: Option<Value>,
+    },
+    /// Request exceeded the model's context window.
+    ///
+    /// Callers should shorten the prompt, switch to a larger model, or summarize
+    /// the conversation before retrying.
+    #[error("provider `{provider}` context window exceeded ({status}): {message}")]
+    ContextWindowExceeded {
+        /// Provider instance selected for the request.
+        provider: ProviderId,
+        /// HTTP status returned by the provider.
+        status: StatusCode,
+        /// Provider-native stable error code, when the provider returned one.
+        code: Option<String>,
+        /// Human-readable provider error message.
+        message: String,
+        /// Provider-native structured error details.
+        details: Option<Value>,
+    },
+    /// Provider's safety system blocked the request or response.
+    ///
+    /// Retrying without changing the prompt will fail again. Callers usually
+    /// surface this to end users so they can revise their input.
+    #[error("provider `{provider}` content filtered ({status}): {message}")]
+    ContentFiltered {
+        /// Provider instance selected for the request.
+        provider: ProviderId,
+        /// HTTP status returned by the provider.
+        status: StatusCode,
+        /// Provider-native stable error code, when the provider returned one.
+        code: Option<String>,
+        /// Human-readable provider error message.
+        message: String,
+        /// Provider-native structured error details.
+        details: Option<Value>,
+    },
+    /// Authentication or authorization failure.
+    ///
+    /// Callers should treat this as a configuration problem (missing or invalid
+    /// credentials, revoked permissions). Retrying with the same credentials
+    /// will fail again.
+    #[error("provider `{provider}` auth failed ({status}): {message}")]
+    AuthFailed {
+        /// Provider instance selected for the request.
+        provider: ProviderId,
+        /// HTTP status returned by the provider.
+        status: StatusCode,
+        /// Provider-native stable error code, when the provider returned one.
+        code: Option<String>,
+        /// Human-readable provider error message.
+        message: String,
+        /// Provider-native structured error details.
         details: Option<Value>,
     },
     /// Provider response could not be transformed into sigma response types.

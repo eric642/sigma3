@@ -1,3 +1,5 @@
+#![allow(clippy::result_large_err)]
+
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -820,6 +822,30 @@ async fn create_routes_deployment_id_to_provider_model() {
         .unwrap();
 
     assert_eq!(response.model, "provider-gpt");
+}
+
+#[tokio::test]
+async fn create_returns_invalid_argument_when_model_empty_and_default_unset() {
+    let server = MockServer::start().await;
+    let provider_id = "p-empty-model";
+    let client = client(
+        provider_id,
+        &server,
+        Value::Null,
+        ParamPolicy::RejectUnsupported,
+    );
+
+    let err = client
+        .chat()
+        .create(&request(ModelRef::default()))
+        .await
+        .expect_err("empty model with no default_model should fail with InvalidArgument");
+
+    assert!(matches!(
+        err,
+        SigmaError::InvalidArgument(ref message)
+            if message.contains("default_model")
+    ));
 }
 
 #[tokio::test]

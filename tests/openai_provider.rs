@@ -958,12 +958,13 @@ async fn create_maps_openai_error_body_to_provider_business_error() {
 
     assert!(matches!(
         err,
-        SigmaError::ProviderBusiness {
+        SigmaError::RateLimited {
             provider,
             status,
             code: Some(code),
             message,
             details: Some(details),
+            ..
         } if provider == "openai-error"
             && status == StatusCode::TOO_MANY_REQUESTS
             && code == "rate_limit"
@@ -1466,7 +1467,7 @@ async fn openai_create_stream_maps_error_status_to_provider_business_error() {
 
     assert!(matches!(
         err,
-        SigmaError::ProviderBusiness {
+        SigmaError::RateLimited {
             provider,
             status,
             code: Some(code),

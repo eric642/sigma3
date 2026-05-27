@@ -2,14 +2,14 @@ use std::sync::Arc;
 
 use http::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use http::{HeaderMap, HeaderName, Method};
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 
 use crate::config::{ChatParameterMap, SecretString};
 use crate::provider_http::{
     ProviderByteStream, ProviderEndpoint, ProviderRequest, ProviderResponse, SignedProviderRequest,
 };
 use crate::providers::common::{
-    header_map_from_config, non_empty_env, parse_response_json,
+    header_map_from_config, non_empty_env, parse_response_json, reject_custom_tool_calls,
     signing_header_value as header_value,
 };
 use crate::types::chat::ChatResponse;
@@ -36,7 +36,7 @@ use request::{
     merge_header_beta_values, messages_url, provider_options_contain, translate_anthropic_messages,
 };
 use response::anthropic_response_to_chat;
-use state::reverse_tool_map;
+use state::{AnthropicState, response_format_fallback, reverse_tool_map};
 use stream::AnthropicSseStream;
 use tools::{apply_tool_choice_name_map, prepare_tools};
 
@@ -44,8 +44,7 @@ const ANTHROPIC_KIND: ProviderKindStatic = ProviderKindStatic::new("anthropic");
 const ANTHROPIC_DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 const ANTHROPIC_DEFAULT_VERSION: &str = "2023-06-01";
 const DEFAULT_MAX_TOKENS: u32 = 4096;
-const RESPONSE_FORMAT_TOOL_NAME: &str = "json_tool_call";
-const TOOL_NAME_MAP_STATE_KEY: &str = "anthropic_tool_name_reverse_map";
+pub(super) const RESPONSE_FORMAT_TOOL_NAME: &str = "json_tool_call";
 const OAUTH_TOKEN_PREFIX: &str = "sk-ant-oat";
 
 const SUPPORTED_CHAT_PARAMS: &[&str] = &[
@@ -178,6 +177,7 @@ impl ChatCompletionAdapter for AnthropicChatAdapter {
         request: ChatAdapterRequest<'_>,
         endpoint: ProviderEndpoint,
     ) -> SigmaResult<ProviderRequest> {
+        reject_custom_tool_calls(&self.provider, request.messages)?;
         let mut params = request.params;
 
         let mut beta_values = self.collect_beta_values(&mut params, request.provider_options);
@@ -253,8 +253,12 @@ impl ChatCompletionAdapter for AnthropicChatAdapter {
 
         let body = Value::Object(body);
 
-        let provider_state = if tool_maps.has_rewrites() {
-            Some(json!({ TOOL_NAME_MAP_STATE_KEY: tool_maps.reverse }))
+        let response_format_fallback = is_response_format_fallback_active(&body);
+        let provider_state = if tool_maps.has_rewrites() || response_format_fallback {
+            Some(Arc::new(AnthropicState {
+                reverse_tool_map: tool_maps.reverse,
+                response_format_fallback,
+            }) as crate::ProviderState)
         } else {
             None
         };
@@ -330,12 +334,30 @@ impl ChatCompletionAdapter for AnthropicChatAdapter {
             context.provider.to_owned(),
             stream,
             reverse_tool_map(context),
+            response_format_fallback(context),
         )))
     }
 
     fn stream_behavior(&self) -> StreamBehavior {
         StreamBehavior::native(true)
     }
+}
+
+/// Checks whether the outgoing request body includes the synthetic
+/// `json_tool_call` tool sigma injects to emulate `response_format` for
+/// pre–structured-output Anthropic models.
+///
+/// The check looks at the final wire body so it picks up the tool no matter
+/// whether it was added via the portable `response_format` mapping or via a
+/// caller's `provider_options.tools` override.
+fn is_response_format_fallback_active(body: &Value) -> bool {
+    body.get("tools")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| {
+            tools.iter().any(|tool| {
+                tool.get("name").and_then(Value::as_str) == Some(RESPONSE_FORMAT_TOOL_NAME)
+            })
+        })
 }
 
 submit_provider! {

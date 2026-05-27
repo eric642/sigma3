@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -97,7 +98,27 @@ impl ChatRequest {
 ///
 /// Providers map these semantic fields to native names and reject unsupported
 /// parameters through their configured parameter policy.
-#[derive(Clone, Serialize, Default, Debug, Deserialize, PartialEq)]
+///
+/// Use [`ChatRequestParamsArgs`] when you want a builder-style construction
+/// instead of struct update syntax:
+///
+/// ```rust
+/// use sigma::types::chat::ChatRequestParamsArgs;
+///
+/// let params = ChatRequestParamsArgs::default()
+///     .temperature(0.2_f32)
+///     .max_tokens(256_u32)
+///     .build()
+///     .expect("static fields cannot fail to build");
+/// assert_eq!(params.temperature, Some(0.2));
+/// assert_eq!(params.max_tokens, Some(256));
+/// ```
+#[derive(Clone, Serialize, Default, Debug, Deserialize, Builder, PartialEq)]
+#[builder(name = "ChatRequestParamsArgs")]
+#[builder(pattern = "mutable")]
+#[builder(setter(into, strip_option), default)]
+#[builder(derive(Debug))]
+#[builder(build_fn(error = "SigmaError"))]
 pub struct ChatRequestParams {
     /// Output modalities requested from multimodal models.
     #[serde(skip_serializing_if = "Option::is_none")]
