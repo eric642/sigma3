@@ -64,6 +64,7 @@ pub mod model_capabilities;
 mod provider;
 mod provider_http;
 mod providers;
+mod route;
 pub mod types;
 
 #[doc(inline)]

@@ -758,6 +758,20 @@ async fn create_returns_invalid_argument_when_model_empty_and_default_unset() {
 }
 
 #[tokio::test]
+async fn create_uses_configured_default_model_when_request_model_is_empty() {
+    let server = MockServer::start().await;
+    mount_chat_response(&server, "http.execute", "ok").await;
+    let provider_id = "p-default-model";
+    let mut config = config(provider_id, &server.uri(), Value::Null);
+    config.default_model = Some(ModelName::from("gpt-public"));
+    let client = Client::build(config).unwrap();
+
+    let response = client.create(&request(ModelRef::default())).await.unwrap();
+
+    assert_eq!(response.model, "provider-gpt");
+}
+
+#[tokio::test]
 async fn create_routes_provider_model_directly() {
     let server = MockServer::start().await;
     mount_chat_response(&server, "http.execute", "ok").await;
