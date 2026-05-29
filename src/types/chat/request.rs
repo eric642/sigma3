@@ -94,10 +94,11 @@ impl ChatRequest {
     }
 }
 
-/// Provider-neutral chat request parameters.
+/// Chat request parameters.
 ///
-/// Providers map these semantic fields to native names and reject unsupported
-/// parameters through their configured parameter policy.
+/// Field names follow OpenAI chat completions naming where that API has a
+/// matching parameter. Providers map these fields to native names and reject
+/// unsupported parameters through their configured parameter policy.
 ///
 /// Use [`ChatRequestParamsArgs`] when you want a builder-style construction
 /// instead of struct update syntax:
@@ -122,7 +123,7 @@ impl ChatRequest {
 pub struct ChatRequestParams {
     /// Output modalities requested from multimodal models.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub output_modalities: Option<Vec<OutputModality>>,
+    pub modalities: Option<Vec<OutputModality>>,
     /// Text verbosity hint.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verbosity: Option<Verbosity>,
@@ -144,7 +145,7 @@ pub struct ChatRequestParams {
     pub presence_penalty: Option<f32>,
     /// Hosted web-search options.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub web_search: Option<WebSearchOptions>,
+    pub web_search_options: Option<WebSearchOptions>,
     /// Number of top log probabilities to include when supported.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_logprobs: Option<u8>,
@@ -153,7 +154,7 @@ pub struct ChatRequestParams {
     pub response_format: Option<ResponseFormat>,
     /// Audio output configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub audio_output: Option<AudioOutput>,
+    pub audio: Option<AudioOutput>,
     /// Whether the provider should store the completion when supported.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub store: Option<bool>,
@@ -171,7 +172,7 @@ pub struct ChatRequestParams {
     pub logprobs: Option<bool>,
     /// Number of completions to generate.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub count: Option<u8>,
+    pub n: Option<u8>,
     /// Predicted output content.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prediction: Option<PredictionContent>,
@@ -235,7 +236,7 @@ mod tests {
         )
         .with_params(ChatRequestParams {
             temperature: Some(0.7),
-            count: Some(2),
+            n: Some(2),
             ..Default::default()
         })
         .with_provider_option(
@@ -247,7 +248,7 @@ mod tests {
         let params = request.chat_parameters().unwrap();
 
         assert_eq!(params.get("temperature"), Some(&json!(0.7f32)));
-        assert_eq!(params.get("count"), Some(&json!(2)));
+        assert_eq!(params.get("n"), Some(&json!(2)));
         assert!(!params.contains_key("messages"));
         assert!(!params.contains_key("model"));
         assert!(!params.contains_key("provider_options"));

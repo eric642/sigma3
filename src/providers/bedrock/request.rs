@@ -460,7 +460,7 @@ fn map_params(
     if let Some(response_format) = params.remove("response_format") {
         add_response_format_tool(provider, response_format, params)?;
     }
-    if let Some(web_search) = params.remove("web_search")
+    if let Some(web_search) = params.remove("web_search_options")
         && is_nova_model(model.as_str())
     {
         let mut tools = params

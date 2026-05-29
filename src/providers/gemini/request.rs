@@ -393,7 +393,7 @@ fn map_gemini_params(
             "max_tokens" | "max_completion_tokens" => {
                 insert_clone(&mut generation_config, "maxOutputTokens", value);
             }
-            "count" => insert_clone(&mut generation_config, "candidateCount", value),
+            "n" => insert_clone(&mut generation_config, "candidateCount", value),
             "stop" => {
                 generation_config.insert("stopSequences".to_string(), stop_sequences(value));
             }
@@ -405,10 +405,10 @@ fn map_gemini_params(
             "presence_penalty" if !is_gemini_3_or_newer(model.as_str()) => {
                 insert_float(&mut generation_config, "presencePenalty", value);
             }
-            "output_modalities" => {
+            "modalities" => {
                 generation_config.insert("responseModalities".to_string(), modalities(value));
             }
-            "audio_output" => {
+            "audio" => {
                 generation_config
                     .insert("speechConfig".to_string(), speech_config(provider, value)?);
                 generation_config
@@ -432,7 +432,7 @@ fn map_gemini_params(
             "tool_choice" => {
                 tool_config = map_tool_choice(provider, value)?;
             }
-            "web_search" => special_tools.push(json!({ "googleSearch": {} })),
+            "web_search_options" => special_tools.push(json!({ "googleSearch": {} })),
             "service_tier" => {
                 if let Some(value) = value.as_str() {
                     service_tier = Some(Value::String(gemini_service_tier(value).to_string()));

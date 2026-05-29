@@ -69,7 +69,7 @@ const SUPPORTED_CHAT_PARAMS: &[&str] = &[
     "tools",
     "top_k",
     "top_p",
-    "web_search",
+    "web_search_options",
 ];
 
 struct BedrockProvider {

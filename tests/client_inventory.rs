@@ -893,12 +893,12 @@ async fn create_rejects_unsupported_params_when_policy_rejects() {
     let client = client("p-reject", &server, Value::Null);
 
     let mut request = request(ModelRef::model("gpt-public"));
-    request.params.count = Some(2);
+    request.params.n = Some(2);
     let err = client.create(&request).await.unwrap_err();
 
     assert!(matches!(
         err,
-        SigmaError::UnsupportedParams { params, .. } if params == vec!["count"]
+        SigmaError::UnsupportedParams { params, .. } if params == vec!["n"]
     ));
 }
 

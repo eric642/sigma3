@@ -73,7 +73,7 @@ const SUPPORTED_CHAT_PARAMS: &[&str] = &[
     "top_k",
     "top_p",
     "user",
-    "web_search",
+    "web_search_options",
 ];
 
 struct AnthropicProvider {

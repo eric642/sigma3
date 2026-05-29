@@ -459,7 +459,7 @@ fn stream_n_request(config: &LiveOpenAiConfig) -> SigmaResult<ChatRequest> {
         ModelRef::model("openai-live-model"),
         config.max_completion_tokens,
         |params| {
-            params.count = Some(2);
+            params.n = Some(2);
         },
     )
 }

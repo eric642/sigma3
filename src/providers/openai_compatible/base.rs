@@ -8,9 +8,8 @@
 //!    injecting the streaming flag for `create_stream` calls.
 //! 2. Resolve and apply caller-configured chat parameter rules
 //!    (drop / unsupported policy / rename / nested drop).
-//! 3. Apply sigma's canonical semantic-to-OpenAI field mapping.
-//! 4. Build the OpenAI request body via [`openai_chat_body`].
-//! 5. Run the adapter's `post_process_body` hook for any final body shape
+//! 3. Build the OpenAI request body via [`openai_chat_body`].
+//! 4. Run the adapter's `post_process_body` hook for any final body shape
 //!    mutations.
 //!
 //! Providers in the OpenAI family implement [`OpenAiChatBodyBuilder`] and call
@@ -29,13 +28,6 @@ use crate::types::chat::{ChatMessage, ChatRequest};
 use crate::{ModelName, ProviderId, SigmaResult};
 
 use super::request::openai_chat_body;
-
-const OPENAI_STANDARD_PARAM_RENAMES: &[(&str, &str)] = &[
-    ("audio_output", "audio"),
-    ("count", "n"),
-    ("output_modalities", "modalities"),
-    ("web_search", "web_search_options"),
-];
 
 /// Inputs the OpenAI body pipeline forwards to the adapter's hooks.
 pub(crate) struct OpenAiBuildContext<'a> {
@@ -88,8 +80,6 @@ pub(crate) trait OpenAiChatBodyBuilder {
         );
         apply_chat_param_rules(self.provider_id(), &mut params, &rules)?;
 
-        apply_openai_standard_param_mapping(&mut params);
-
         let body = openai_chat_body(
             ctx.provider,
             ctx.provider_model,
@@ -102,18 +92,6 @@ pub(crate) trait OpenAiChatBodyBuilder {
         };
         self.post_process_body(ctx, &mut body)?;
         Ok(Value::Object(body))
-    }
-}
-
-fn apply_openai_standard_param_mapping(params: &mut ChatParameterMap) {
-    for (from, to) in OPENAI_STANDARD_PARAM_RENAMES {
-        rename_param(params, from, to);
-    }
-}
-
-fn rename_param(params: &mut ChatParameterMap, from: &str, to: &str) {
-    if let Some(value) = params.remove(from) {
-        params.insert(to.to_string(), value);
     }
 }
 
@@ -131,12 +109,12 @@ mod tests {
     };
 
     const SUPPORTED: &[&str] = &[
-        "audio_output",
-        "count",
-        "output_modalities",
+        "audio",
+        "n",
+        "modalities",
         "stream",
         "temperature",
-        "web_search",
+        "web_search_options",
     ];
 
     struct StubAdapter {
@@ -167,8 +145,17 @@ mod tests {
         ) -> SigmaResult<()> {
             self.post_process_body_called.set(true);
             body.insert(
-                "__post_body_saw_openai_mapping".to_string(),
-                Value::Bool(body.contains_key("n") && !body.contains_key("count")),
+                "__post_body_saw_openai_fields".to_string(),
+                Value::Bool(
+                    body.contains_key("audio")
+                        && body.contains_key("modalities")
+                        && body.contains_key("n")
+                        && body.contains_key("web_search_options")
+                        && !body.contains_key("audio_output")
+                        && !body.contains_key("count")
+                        && !body.contains_key("output_modalities")
+                        && !body.contains_key("web_search"),
+                ),
             );
             body.insert("__post_body_sentinel".to_string(), Value::Bool(true));
             Ok(())
@@ -192,14 +179,14 @@ mod tests {
             vec![UserMessage::text("hi").into()],
         )
         .with_params(ChatRequestParams {
-            audio_output: Some(AudioOutput {
+            audio: Some(AudioOutput {
                 voice: AudioVoice::Alloy,
                 format: AudioOutputFormat::Mp3,
             }),
-            count: Some(2),
-            output_modalities: Some(vec![OutputModality::Text, OutputModality::Audio]),
+            n: Some(2),
+            modalities: Some(vec![OutputModality::Text, OutputModality::Audio]),
             temperature: Some(0.5),
-            web_search: Some(WebSearchOptions {
+            web_search_options: Some(WebSearchOptions {
                 search_context_size: Some(WebSearchContextSize::Low),
                 user_location: None,
             }),
@@ -235,7 +222,7 @@ mod tests {
     }
 
     #[test]
-    fn build_chat_body_applies_openai_standard_field_mapping_before_body_hook() {
+    fn build_chat_body_preserves_openai_standard_fields_before_body_hook() {
         let adapter = StubAdapter::new();
         let request = request_with_openai_standard_params();
         let model = ModelName::from("native-model");
@@ -267,7 +254,7 @@ mod tests {
         );
         assert!(!body.contains_key("web_search"));
         assert_eq!(
-            body.get("__post_body_saw_openai_mapping"),
+            body.get("__post_body_saw_openai_fields"),
             Some(&json!(true))
         );
     }

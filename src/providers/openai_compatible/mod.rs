@@ -40,14 +40,14 @@ const OPENAI_COMPATIBLE_SPEC: OpenAiCompatibleProviderSpec = OpenAiCompatiblePro
 };
 
 const SUPPORTED_CHAT_PARAMS: &[&str] = &[
-    "audio_output",
-    "count",
+    "audio",
     "frequency_penalty",
     "logit_bias",
     "logprobs",
     "max_completion_tokens",
     "max_tokens",
-    "output_modalities",
+    "n",
+    "modalities",
     "parallel_tool_calls",
     "prediction",
     "presence_penalty",
@@ -68,7 +68,7 @@ const SUPPORTED_CHAT_PARAMS: &[&str] = &[
     "top_logprobs",
     "top_p",
     "verbosity",
-    "web_search",
+    "web_search_options",
 ];
 
 /// Reusable provider driver for OpenAI-compatible chat completion endpoints.

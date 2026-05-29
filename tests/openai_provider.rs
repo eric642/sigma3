@@ -455,7 +455,7 @@ async fn openai_create_passes_service_tier() {
 }
 
 #[tokio::test]
-async fn openai_create_maps_portable_params_to_openai_body_fields() {
+async fn openai_create_sends_openai_named_params() {
     let server = MockServer::start().await;
     mount_json_response(
         &server,
@@ -473,13 +473,13 @@ async fn openai_create_maps_portable_params_to_openai_body_fields() {
     ))
     .unwrap();
     let mut request = request(ModelRef::model("gpt-public"));
-    request.params.audio_output = Some(AudioOutput {
+    request.params.audio = Some(AudioOutput {
         voice: AudioVoice::Alloy,
         format: AudioOutputFormat::Mp3,
     });
-    request.params.count = Some(2);
-    request.params.output_modalities = Some(vec![OutputModality::Text, OutputModality::Audio]);
-    request.params.web_search = Some(WebSearchOptions {
+    request.params.n = Some(2);
+    request.params.modalities = Some(vec![OutputModality::Text, OutputModality::Audio]);
+    request.params.web_search_options = Some(WebSearchOptions {
         search_context_size: Some(WebSearchContextSize::Low),
         user_location: None,
     });
@@ -1397,7 +1397,7 @@ async fn openai_create_stream_preserves_choice_indices_for_n_greater_than_one() 
     ))
     .unwrap();
     let mut request = request(ModelRef::model("gpt-public"));
-    request.params.count = Some(2);
+    request.params.n = Some(2);
 
     let chunks = client
         .create_stream(&request)

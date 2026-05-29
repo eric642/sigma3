@@ -9,14 +9,14 @@ use sigma::types::shared::FunctionObject;
 use sigma::{ModelRef, ProviderId};
 
 #[test]
-fn chat_request_serializes_semantic_params_object() {
+fn chat_request_serializes_params_object() {
     let request = ChatRequest::new(
         ModelRef::model("model-public"),
         vec![UserMessage::text("hello").into()],
     )
     .with_params(ChatRequestParams {
         temperature: Some(0.7),
-        count: Some(2),
+        n: Some(2),
         cache_control: Some(CacheControl::ephemeral_with_ttl(
             CacheControlTtl::FiveMinutes,
         )),
@@ -31,7 +31,7 @@ fn chat_request_serializes_semantic_params_object() {
             "messages": [{"role": "user", "content": {"text": "hello"}}],
             "model": "model-public",
             "params": {
-                "count": 2,
+                "n": 2,
                 "temperature": 0.7f32,
                 "cache_control": {"type": "ephemeral", "ttl": "5m"}
             }

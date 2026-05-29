@@ -1,6 +1,8 @@
 use serde_json::json;
 use sigma::types::chat::{
-    CacheControl, CacheControlTtl, ChatRequest, ChatRequestParams, StopConfiguration, UserMessage,
+    AudioOutput, AudioOutputFormat, AudioVoice, CacheControl, CacheControlTtl, ChatRequest,
+    ChatRequestParams, OutputModality, StopConfiguration, UserMessage, WebSearchContextSize,
+    WebSearchOptions,
 };
 use sigma::{ChatParameterMap, ModelRef, ProviderId};
 
@@ -72,23 +74,41 @@ fn chat_request_provider_options_round_trip_as_provider_body_overrides() {
 }
 
 #[test]
-fn chat_request_params_serialize_as_semantic_params_object() {
+fn chat_request_params_serialize_as_params_object() {
     let req = ChatRequest::new(
         ModelRef::model("gpt-4o"),
         vec![UserMessage::text("hi").into()],
     )
     .with_params(ChatRequestParams {
+        audio: Some(AudioOutput {
+            voice: AudioVoice::Alloy,
+            format: AudioOutputFormat::Mp3,
+        }),
+        modalities: Some(vec![OutputModality::Text, OutputModality::Audio]),
         temperature: Some(0.7),
-        count: Some(2),
+        n: Some(2),
+        web_search_options: Some(WebSearchOptions {
+            search_context_size: Some(WebSearchContextSize::Low),
+            user_location: None,
+        }),
         ..Default::default()
     });
 
     let value = serde_json::to_value(&req).unwrap();
 
+    assert_eq!(
+        value["params"]["audio"],
+        json!({"voice": "alloy", "format": "mp3"})
+    );
+    assert_eq!(value["params"]["modalities"], json!(["text", "audio"]));
     assert_eq!(value["params"]["temperature"], json!(0.7f32));
-    assert_eq!(value["params"]["count"], json!(2));
+    assert_eq!(value["params"]["n"], json!(2));
+    assert_eq!(
+        value["params"]["web_search_options"],
+        json!({"search_context_size": "low"})
+    );
     assert!(value.get("temperature").is_none());
-    assert!(value.get("count").is_none());
+    assert!(value.get("n").is_none());
 }
 
 #[test]

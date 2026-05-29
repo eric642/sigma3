@@ -243,7 +243,7 @@ async fn gemini_create_maps_openai_params_tools_and_response_format() {
     let mut request = basic_request();
     request.params.top_p = Some(0.9);
     request.params.stop = Some(StopConfiguration::String("END".to_string()));
-    request.params.count = Some(2);
+    request.params.n = Some(2);
     request.params.reasoning_effort = Some(ReasoningEffort::Low);
     request.params.response_format = Some(ResponseFormat::JsonSchema {
         json_schema: ResponseFormatJsonSchema {

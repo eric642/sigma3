@@ -329,7 +329,7 @@ pub(super) fn map_tool_choice(params: &mut ChatParameterMap) {
 }
 
 pub(super) fn map_web_search_tool(params: &mut ChatParameterMap) {
-    let Some(value) = params.remove("web_search") else {
+    let Some(value) = params.remove("web_search_options") else {
         return;
     };
     let user_location = value

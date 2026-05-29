@@ -461,7 +461,7 @@ async fn bedrock_create_maps_nova_web_search_to_grounding_tool() {
         vec![UserMessage::from("search").into()],
     )
     .with_params(ChatRequestParams {
-        web_search: Some(WebSearchOptions::default()),
+        web_search_options: Some(WebSearchOptions::default()),
         ..Default::default()
     });
 

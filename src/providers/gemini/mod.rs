@@ -45,13 +45,13 @@ const GEMINI_API_KEY_HEADER: &str = "x-goog-api-key";
 /// still want to forward a provider-native field explicitly can use
 /// [`crate::types::chat::ChatRequest::provider_options`].
 const SUPPORTED_GEMINI_CHAT_PARAMS: &[&str] = &[
-    "audio_output",
-    "count",
+    "audio",
     "frequency_penalty",
     "logprobs",
     "max_completion_tokens",
     "max_tokens",
-    "output_modalities",
+    "n",
+    "modalities",
     "presence_penalty",
     "reasoning_effort",
     "response_format",
@@ -63,7 +63,7 @@ const SUPPORTED_GEMINI_CHAT_PARAMS: &[&str] = &[
     "tools",
     "top_logprobs",
     "top_p",
-    "web_search",
+    "web_search_options",
 ];
 
 struct GeminiProvider {
