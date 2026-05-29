@@ -23,6 +23,7 @@ A general-purpose LLM API client.
 - The standard chat adapter lifecycle must remain observable and ordered: supported params, message translation, parameter mapping, endpoint selection, request transform, signing, HTTP execution, response or stream decoding.
 - Use typed `thiserror` errors for configuration, routing, provider transform/signing/response, unsupported parameters, and HTTP failures.
 - Prefer focused fake providers in tests over real external providers for core routing, catalog, adapter lifecycle, and streaming behavior.
+- Minimize unnecessary allocations: prefer borrows (`&T`) and `Cow<'_, _>` over cloning; clone only when ownership is genuinely required.
 
 ## Commands
 
